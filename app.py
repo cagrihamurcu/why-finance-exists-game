@@ -3,6 +3,13 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 
+# --- Auto-refresh (timer için) ---
+try:
+    from streamlit_autorefresh import st_autorefresh
+    AUTOREFRESH_OK = True
+except Exception:
+    AUTOREFRESH_OK = False
+
 st.set_page_config(page_title="Finans Neden Var?", layout="wide")
 
 # =========================
@@ -81,7 +88,7 @@ def can_borrow(month: int) -> bool:
     return month >= 4
 
 # =========================
-# TIMER
+# TIMER (Deadline mantığı - sağlam)
 # =========================
 def stage_time_limit_seconds(month: int) -> int:
     if month <= 3:
@@ -93,15 +100,15 @@ def stage_time_limit_seconds(month: int) -> int:
     return int(CFG["TIMER_STAGE_4"])
 
 def ensure_timer(p: dict, month: int):
-    key = f"timer_start_m{month}"
+    key = f"deadline_m{month}"
     if key not in p:
-        p[key] = time.time()
+        limit_s = stage_time_limit_seconds(month)
+        p[key] = time.time() + limit_s
 
 def time_left_seconds(p: dict, month: int) -> int:
-    limit_s = stage_time_limit_seconds(month)
-    key = f"timer_start_m{month}"
-    start = float(p.get(key, time.time()))
-    left = int(limit_s - (time.time() - start))
+    key = f"deadline_m{month}"
+    deadline = float(p.get(key, time.time()))
+    left = int(deadline - time.time())
     return max(left, 0)
 
 def format_mmss(seconds: int) -> str:
@@ -272,6 +279,13 @@ if p.get("finished", False):
 # AY PANELİ
 # =========================
 month = int(p["month"])
+
+# Timer'ın canlı işlemesi için sayfa her saniye yenilensin
+if AUTOREFRESH_OK:
+    st_autorefresh(interval=1000, key=f"tick_{name}_{month}")
+else:
+    st.warning("⏱️ Canlı sayaç için paket yok: pip install streamlit-autorefresh")
+
 opened = open_assets_by_month(month)
 investable = [k for k in opened if k != "cash"]
 
@@ -415,7 +429,7 @@ if st.button(btn_label):
     if p["holdings"]["cash"] < 0:
         deficit = -float(p["holdings"]["cash"])
         if not can_borrow(month):
-            # Temerrüt: ay sonu işlemleri uygulanmasın
+            # Temerrüt
             p["holdings"]["cash"] = 0.0
             p["defaulted"] = True
             p["finished"] = True
@@ -439,11 +453,10 @@ if st.button(btn_label):
             })
             st.rerun()
         else:
-            # banka: otomatik borç
             p["debt"] += deficit
             p["holdings"]["cash"] = 0.0
 
-    # 2) Yatırım transferi (tasarruf üzerinden)
+    # 2) Yatırım transferi
     if saving > 0 and investable and alloc_sum > 0:
         invested_amount = saving if alloc_sum >= 100 else saving * (alloc_sum / 100.0)
 
@@ -508,12 +521,12 @@ if st.button(btn_label):
     if can_borrow(month) and float(p["debt"]) > 0:
         p["debt"] *= (1.0 + float(CFG["LOAN_RATE"]))
 
-    # 6) Enflasyon: nakit aşınması (KAYBI HESAPLA)
+    # 6) Enflasyon kaybı
     infl_rate = float(CFG["INFLATION_M"])
     inflation_loss = float(p["holdings"]["cash"]) * infl_rate
     p["holdings"]["cash"] *= (1.0 - infl_rate)
 
-    # 7) Borç geri ödeme (ay sonu)
+    # 7) Borç geri ödeme
     if can_borrow(month) and float(p["debt"]) > 0 and repay_pct > 0:
         target = float(p["debt"]) * (float(repay_pct) / 100.0)
         repay_amt = min(float(p["holdings"]["cash"]), target)
@@ -528,7 +541,7 @@ if st.button(btn_label):
     end_debt = float(p["debt"])
     end_total = end_cash + end_invest - end_debt
 
-    # 9) Log (sade)
+    # 9) Log
     p["log"].append({
         "Ay": month,
         "Aşama": stage_label(month),
