@@ -102,7 +102,6 @@ def total_wealth(p):
     return float(sum(p["holdings"].values()))
 
 def total_investments(p):
-    # cash dışındaki her şey yatırım kabul ediliyor
     return float(sum(v for k, v in p["holdings"].items() if k != "cash"))
 
 def rng_for(name, month):
@@ -112,7 +111,7 @@ def rng_for(name, month):
 # UI
 # =========================
 st.title("🎮 Finansal Piyasalar Neden Var? (1. Hafta Oyunu)")
-st.caption("Tasarruf = Gelir − (Sabit Gider + Ek Harcama). Asıl karar: bu ayın tasarrufunu hangi yatırım aracına dönüştüreceksiniz?")
+st.caption("Tasarruf = Gelir − (Sabit Gider + Ek Harcama). Bu ayın tasarrufu üzerinden yatırım kararı verilir. (State sadece 'Ayı Tamamla' ile güncellenir.)")
 
 top1, top2 = st.columns([1, 3])
 with top1:
@@ -173,44 +172,34 @@ cur = pd.DataFrame([{"Varlık": ASSETS[k], "Tutar (TL)": p["holdings"][k]} for k
 st.dataframe(cur, use_container_width=True, hide_index=True)
 
 # =========================
-# 1) BÜTÇE
+# 1) BÜTÇE (ÖNİZLEME)
 # =========================
 st.divider()
-st.subheader("1) Bu Ay Bütçe (Tasarruf = Gelir − Gider)")
+st.subheader("1) Bu Ay Bütçe (Önizleme)")
 
-income = p["income"]
-fixed = p["fixed"]
+income = float(p["income"])
+fixed = float(p["fixed"])
 extra = st.number_input("Ek Harcama", 0, int(income), 5000, 1000)
 
-total_exp = float(fixed) + float(extra)
-saving = max(float(income) - total_exp, 0.0)
+total_exp = fixed + float(extra)
+saving = max(income - total_exp, 0.0)
 
 st.write(f"Gelir: **{income:,.0f} TL**".replace(",", "."))
 st.write(f"Toplam gider: **{total_exp:,.0f} TL**".replace(",", "."))
 st.write(f"Bu ay tasarruf (net): **{saving:,.0f} TL**".replace(",", "."))
 
-# başlangıç servet (log için)
-start_total = total_wealth(p)
-
-# nakit akışı (gelir ve gider)
-p["holdings"]["cash"] += float(income)
-p["holdings"]["cash"] -= total_exp
-
-cashflow_shortfall = 0.0
-if p["holdings"]["cash"] < 0:
-    cashflow_shortfall = -p["holdings"]["cash"]
-    st.error(f"Nakit açığı! (Eksik: {cashflow_shortfall:,.0f} TL)".replace(",", "."))
-    p["holdings"]["cash"] = 0.0
+# Bu ay nakde etkisi (önizleme): cash + income - expense
+cash_after_cashflow_preview = max(p["holdings"]["cash"] + income - total_exp, 0.0)
+st.caption(f"Önizleme: Bu ay gelir/gider sonrası nakit (yatırım & enflasyon öncesi): {cash_after_cashflow_preview:,.0f} TL".replace(",", "."))
 
 # =========================
-# 2) YATIRIM KARARI
+# 2) YATIRIM KARARI (ÖNİZLEME)
 # =========================
 st.divider()
-st.subheader("2) Bu Ayın Tasarrufunu Yatırıma Dönüştür")
+st.subheader("2) Bu Ayın Tasarrufunu Yatırıma Dönüştür (Önizleme)")
 
 alloc = {}
 alloc_sum = 0.0
-alloc_adj = {}
 
 if saving <= 0:
     st.caption("Bu ay tasarruf yok → yatırım yapılamaz.")
@@ -243,35 +232,45 @@ else:
         st.warning("Toplam 100'ü geçti. Oranlar otomatik 100'e ölçeklenecek (normalize).")
 
 # =========================
-# AYI TAMAMLA
+# AYI TAMAMLA (STATE GÜNCELLE)
 # =========================
 if st.button("✅ Ayı Tamamla"):
     rng = rng_for(name, month)
 
-    # Bu ay tasarruftan yatırıma giden toplam tutar
+    # Başlangıç snapshot (log)
+    start_total = total_wealth(p)
+
+    # 0) Bu ay nakit akışı: gelir ekle, gider düş
+    p["holdings"]["cash"] += income
+    p["holdings"]["cash"] -= total_exp
+    if p["holdings"]["cash"] < 0:
+        p["holdings"]["cash"] = 0.0
+
+    # 1) Bu ay tasarruftan yatırıma giden tutar (özet tablo için)
     if saving <= 0 or (not investable) or alloc_sum <= 0:
         invested_amount = 0.0
+        alloc_adj = {}
     else:
         invested_amount = saving if alloc_sum >= 100 else saving * (alloc_sum / 100.0)
-
-    # 1) Sadece bu ayın tasarrufunu dağıt
-    if saving > 0 and investable and alloc_sum > 0:
+        # normalize
         if alloc_sum > 100:
             alloc_adj = {k: (v / alloc_sum) * 100 for k, v in alloc.items()}
         else:
             alloc_adj = dict(alloc)
 
+        # yatırımı uygula: yatırım miktarı tasarruf üzerinden hesaplanır
         for k, pct in alloc_adj.items():
             invest_amt = saving * (pct / 100.0)
             p["holdings"][k] += invest_amt
             p["holdings"]["cash"] -= invest_amt
 
+        if p["holdings"]["cash"] < 0:
+            # güvenlik: teoride olmamalı ama yuvarlama vs olursa
+            p["holdings"]["cash"] = 0.0
+
     # 2) Kurum yokken nakit kayıp riski (Ay 1-3) — tabloda göstermiyoruz
-    cash_loss_happened = False
-    cash_loss_amt = 0.0
     if month <= 3 and p["holdings"]["cash"] > 0:
         if rng.random() < CFG["CASH_LOSS_PROB"]:
-            cash_loss_happened = True
             cash_loss_amt = p["holdings"]["cash"] * CFG["CASH_LOSS_SEV"]
             p["holdings"]["cash"] -= cash_loss_amt
 
@@ -305,17 +304,17 @@ if st.button("✅ Ayı Tamamla"):
             fx_r += CFG["CRISIS_FX"]
         p["holdings"]["fx"] *= (1.0 + fx_r)
 
-    # 4) Enflasyon: oran + tutar
+    # 4) Enflasyon (nakit aşınması): oran + tutar
     infl_rate = float(CFG["INFLATION_M"])
     inflation_amt = p["holdings"]["cash"] * infl_rate
     p["holdings"]["cash"] *= (1.0 - infl_rate)
 
-    # 5) Dönem sonu özetleri
+    # 5) Dönem sonu özetleri (DOĞRU: state güncellendikten sonra okunuyor)
     end_cash = float(p["holdings"]["cash"])
     end_invest = total_investments(p)
     end_total = total_wealth(p)
 
-    # 6) Log (tablo için gereken sade kalemler)
+    # 6) Log (sade tablo için)
     p["log"].append({
         "Ay": month,
         "Aşama": stage_label(month),
@@ -333,25 +332,19 @@ if st.button("✅ Ayı Tamamla"):
         "DönemSonuYatırım(TL)": end_invest,
         "ToplamServet(TL)": end_total,
 
-        # Teknik kayıt (tabloda göstermiyoruz ama grafikte kullanıyoruz)
+        # grafik/denetim için
         "Servet_Başlangıç(TL)": start_total,
         "Servet_Bitiş(TL)": end_total,
-        "NakitKayıpOldu": cash_loss_happened,
-        "NakitKayıpTutar(TL)": cash_loss_amt,
     })
 
     st.success(f"Ay {month} tamamlandı. Güncel servet: {end_total:,.0f} TL".replace(",", "."))
     st.info(f"Enflasyon: %{infl_rate*100:.2f} | Nakitten aşınma: {inflation_amt:,.0f} TL".replace(",", "."))
-    if cash_loss_happened:
-        st.warning("⚠️ Kurum yokken (Ay 1–3) nakit kaybı gerçekleşti. (Tabloda gösterilmiyor.)")
 
     p["month"] += 1
     st.rerun()
 
 # =========================
-# GEÇMİŞ: SADE ÖZET (İSTEDİĞİNİZ FORMAT)
-# - Kazanç/Kayıp yok
-# - Dönem sonu nakit, yatırım, toplam servet var
+# GEÇMİŞ TABLOSU (SADE)
 # =========================
 if p["log"]:
     st.divider()
