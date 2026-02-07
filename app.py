@@ -5,7 +5,7 @@ import pandas as pd
 st.set_page_config(page_title="1. Hafta Oyunu — Finans Neden Var?", layout="wide")
 
 # =========================
-# PARAMETRELER (1. hafta)
+# 1. HAFTA PARAMETRELERİ
 # =========================
 CFG = {
     "START_CAP": 1_000_000.0,
@@ -16,15 +16,16 @@ CFG = {
     "R_SUCCESS": 0.35,
     "R_FAILURE": -0.60,
 
-    # Deposit (mevduat) — düşük risk
+    # Deposit (mevduat) — düşük risk (krizde hafif etkilenebilir)
     "R_DEPOSIT": 0.12,
+    "DEPOSIT_CRISIS_HIT": 0.02,  # tur 4'te mevduata küçük negatif etki (opsiyonel ama eğitici)
 
-    # Intermediated Investment (banka) — daha istikrarlı ama maliyetli
+    # Intermediated (banka üzerinden) — daha istikrarlı ama maliyetli (spread/fee)
     "BANK_EXPECTED": 0.18,
     "BANK_VOL": 0.05,
     "BANK_FEE": 0.03,  # spread/komisyon
 
-    # Likidite ihtiyacı (Direct'i vurur)
+    # Likidite ihtiyacı: Direct'i vurur (zararına bozdurma)
     "P_LIQ": 0.15,
     "LIQ_COST": 0.20,
 
@@ -39,6 +40,15 @@ CFG = {
     "LOSS_PENALTY": 120_000.0,
 }
 
+NEWS = {
+    1: "🗞️ Haber: Piyasa yeni kuruluyor. Finansal kurumlar yok. Yatırımlar doğrudan ve kırılgan.",
+    2: "🗞️ Haber: Belirsizlik sürüyor. Likidite ihtiyacı olanlar yatırımını zararına bozuyor.",
+    3: "🗞️ Haber: Bankalar ve mevduat ürünleri devreye giriyor. Aracılık maliyeti (spread) ortaya çıkıyor.",
+    4: "🚨 MANŞET: Makro kriz! Risk artıyor, likidite sıkışıyor, belirsizlik yükseliyor.",
+    5: "🗞️ Haber: Kriz sonrası denge arayışı. İstikrar mı, getiri mi? Portföy kararları belirleyici.",
+    6: "🗞️ Haber: Toparlanma. Geçmiş kararlarınızın etkisi netleşiyor."
+}
+
 # =========================
 # SESSION STATE
 # =========================
@@ -49,19 +59,12 @@ if "players" not in st.session_state:
     st.session_state.players = {}
 
 def migrate_player(pl):
-    # Eski sürümlerden kalan kayıtları otomatik düzeltir (KeyError önler)
-    if "scenario_ok" not in pl:
-        pl["scenario_ok"] = False
-    if "turn" not in pl:
-        pl["turn"] = 1
-    if "wealth" not in pl:
-        pl["wealth"] = CFG["START_CAP"]
-    if "returns" not in pl:
-        pl["returns"] = []
-    if "log" not in pl:
-        pl["log"] = []
-    if "counterfactual_savings" not in pl:
-        pl["counterfactual_savings"] = 0.0
+    # Eski sürümlere uyum (KeyError önler)
+    if "scenario_ok" not in pl: pl["scenario_ok"] = False
+    if "turn" not in pl: pl["turn"] = 1
+    if "wealth" not in pl: pl["wealth"] = CFG["START_CAP"]
+    if "log" not in pl: pl["log"] = []
+    if "counterfactual_gain" not in pl: pl["counterfactual_gain"] = 0.0
     return pl
 
 def get_player(name: str):
@@ -70,64 +73,120 @@ def get_player(name: str):
             "scenario_ok": False,
             "turn": 1,
             "wealth": CFG["START_CAP"],
-            "returns": [],
             "log": [],
-            "counterfactual_savings": 0.0
+            "counterfactual_gain": 0.0
         }
     st.session_state.players[name] = migrate_player(st.session_state.players[name])
     return st.session_state.players[name]
 
+# =========================
+# RNG ve "DURUM" ÜRETİMİ
+# (Eğiticilik için: Aynı turda farklı seçeneklerin
+#  "karşılaştırması" aynı temel duruma dayanır.)
+# =========================
+def rng_for(name: str, turn: int):
+    return np.random.default_rng(st.session_state.seed + turn * 10_000 + (hash(name) % 10_000))
+
+def draw_state(rng: np.random.Generator, turn: int):
+    """Bir tur için ekonomik 'durumu' üretir:
+    - Direct başarı/başarısızlık
+    - Banka brüt getiri (komisyon öncesi)
+    - Likidite şoku (olursa Direct'e ceza)
+    - Kriz (tur 4)
+    """
+    crisis = (turn == CFG["CRISIS_TURN"])
+
+    direct_success = (rng.random() < CFG["P_SUCCESS"])
+    direct_base = CFG["R_SUCCESS"] if direct_success else CFG["R_FAILURE"]
+
+    bank_vol = CFG["BANK_VOL"] + (CFG["CRISIS_VOL_BONUS"] if crisis else 0.0)
+    bank_gross = rng.normal(CFG["BANK_EXPECTED"], bank_vol)  # fee öncesi
+
+    p_liq = CFG["P_LIQ"] + (CFG["CRISIS_LIQ_BONUS"] if crisis else 0.0)
+    liq = (rng.random() < p_liq)
+
+    return {
+        "crisis": crisis,
+        "direct_success": direct_success,
+        "direct_base": direct_base,
+        "bank_gross": bank_gross,
+        "liq": liq
+    }
+
+def option_return(choice: str, state: dict, turn: int):
+    """Seçeneğe göre getiriyi bileşenleriyle hesaplar."""
+    crisis = state["crisis"]
+    liq = state["liq"]
+
+    base_r = fee_r = liq_pen_r = crisis_r = 0.0
+
+    if choice == "Direct Investment":
+        base_r = state["direct_base"]
+        if liq:
+            liq_pen_r = -CFG["LIQ_COST"]
+        if crisis:
+            crisis_r = -CFG["CRISIS_HIT_DIRECT"]
+
+    elif choice == "Deposit":
+        base_r = CFG["R_DEPOSIT"]
+        if crisis:
+            crisis_r = -CFG["DEPOSIT_CRISIS_HIT"]
+
+    else:  # Banka
+        base_r = state["bank_gross"]
+        fee_r = -CFG["BANK_FEE"]
+        if crisis:
+            crisis_r = -CFG["CRISIS_HIT_BANK"]
+
+    total_r = base_r + fee_r + liq_pen_r + crisis_r
+
+    return total_r, {
+        "Temel getiri": base_r,
+        "Aracılık maliyeti (spread/komisyon)": fee_r,
+        "Likidite ihtiyacı maliyeti": liq_pen_r,
+        "Makro kriz etkisi": crisis_r,
+        "TOPLAM": total_r
+    }
+
 def score(pl):
-    loss_turns = sum(1 for r in pl["returns"] if r < 0)
+    # Zarar tur sayısı = toplam getiri < 0 olan turlar
+    loss_turns = 0
+    for rec in pl["log"]:
+        if rec.get("TotalReturn", 0) < 0:
+            loss_turns += 1
     return pl["wealth"] - CFG["LOSS_PENALTY"] * loss_turns
 
 def var5(pl):
-    if not pl["returns"]:
+    if not pl["log"]:
         return 0.0
-    return float(np.percentile(np.array(pl["returns"]), 5))
+    arr = np.array([rec["TotalReturn"] for rec in pl["log"]], dtype=float)
+    return float(np.percentile(arr, 5))
 
 # =========================
-# RNG & RETURN HELPERS
+# UI: Başlık + Eğitmen mini paneli
 # =========================
-def rng_for(name, turn):
-    return np.random.default_rng(st.session_state.seed + turn * 1000 + (hash(name) % 1000))
+st.title("🎮 1. Hafta Oyunu: Neden Finansal Piyasalar ve Kurumlarla İlgilenmekteyiz?")
 
-def direct_return(rng):
-    success = rng.random() < CFG["P_SUCCESS"]
-    return CFG["R_SUCCESS"] if success else CFG["R_FAILURE"]
-
-def deposit_return():
-    return CFG["R_DEPOSIT"]
-
-def bank_return_components(rng, turn):
-    vol = CFG["BANK_VOL"] + (CFG["CRISIS_VOL_BONUS"] if turn == CFG["CRISIS_TURN"] else 0.0)
-    gross = rng.normal(CFG["BANK_EXPECTED"], vol)
-    fee = -CFG["BANK_FEE"]
-    return gross, fee
-
-def liquidity_shock_happens(rng, turn):
-    p = CFG["P_LIQ"] + (CFG["CRISIS_LIQ_BONUS"] if turn == CFG["CRISIS_TURN"] else 0.0)
-    return rng.random() < p
-
-# =========================
-# UI: HEADER + RESET
-# =========================
-st.title("🎮 1. Hafta Oyunu: Finansal Piyasalar ve Kurumlar Neden Var?")
-
-top1, top2 = st.columns([1, 2])
-with top1:
+topA, topB, topC = st.columns([1, 1, 2])
+with topA:
     if st.button("🧹 Oyunu Sıfırla"):
         st.session_state.clear()
         st.success("Sıfırlandı.")
         st.rerun()
-with top2:
-    st.caption("Kod güncellemesi sonrası hata olursa önce 'Oyunu Sıfırla'ya basın.")
+with topB:
+    st.caption("Seed (ders için sabit):")
+    new_seed = st.number_input(" ", value=int(st.session_state.seed), step=1, label_visibility="collapsed")
+    if new_seed != st.session_state.seed:
+        st.session_state.seed = int(new_seed)
+        st.info("Seed güncellendi (gelecek turların sonuç dizisi değişir).")
+with topC:
+    st.caption("Not: Kod güncellemesi sonrası hata olursa 'Oyunu Sıfırla'ya basın.")
 
-# =========================
-# MAIN LAYOUT
-# =========================
 left, right = st.columns([2.2, 1])
 
+# =========================
+# SOL: Oyun alanı
+# =========================
 with left:
     name = st.text_input("Oyuncu Adı (takma isim)", placeholder="örn. T3_Ayşe / Mehmet / Takım-4")
     if not name:
@@ -135,41 +194,26 @@ with left:
 
     pl = get_player(name)
 
-    # Ensure start cap applies for new players
-    if len(pl["log"]) == 0 and abs(pl["wealth"] - CFG["START_CAP"]) > 1e-6:
-        pl["wealth"] = CFG["START_CAP"]
-
-    # -------------------------
-    # Scenario gate (must read)
-    # -------------------------
+    # Senaryo kapısı (zorunlu okuma)
     if not pl["scenario_ok"]:
-        st.subheader("📌 OYUN SENARYOSU (Okuyun → Başlayın)")
+        st.subheader("📌 Oyun Senaryosu (1 dakika)")
         st.markdown(
             """
-## 🌍 Finansal Sistem Olmadan Bir Ekonomi
+### 🌍 Finansal Sistem Olmadan Bir Ekonomi
 
 Bu oyunda yeni kurulmuş bir ekonomide faaliyet gösteriyorsunuz.
 
 - **Başlangıç sermayeniz:** 1.000.000 TL  
 - **Süre:** 6 tur  
-- Ekonomide **belirsizlik** vardır.  
-- Zaman zaman **likidite ihtiyacı** doğabilir.  
+- Ekonomide **belirsizlik** var.  
+- Zaman zaman **likidite ihtiyacı** doğabilir (yatırımı zararına bozma).  
 - **4. turda makro bir kriz** yaşanacaktır.
 
-### İlk iki turda (Tur 1–2):
-- **Banka yok**
-- **Mevduat yok**
-- **Risk yönetimi/likidite desteği yok**
-- Yalnızca **Direct Investment** (tekil risk) vardır.
+**Tur 1–2:** Finansal kurum yok → yalnızca **Direct Investment** (tekil risk)  
+**Tur 3+:** **Mevduat** ve **Banka aracılığıyla yatırım** devreye girer (maliyet/spread karşılığında istikrar)
 
-### 3. turdan itibaren:
-- **Mevduat** ve **Banka aracılığıyla yatırım** seçenekleri açılır.
-- Banka seçeneği daha istikrarlı olabilir; ancak **spread/komisyon** maliyeti vardır.
-
-### 🎯 Amaç:
-6 tur sonunda şu soruya veriyle cevap vereceğiz:
-
-**“Finansal kurumlar sadece maliyet mi üretir, yoksa belirsizliği ve likiditeyi yöneterek istikrar mı sağlar?”**
+🎯 Amaç:  
+**Finansal kurumlar sadece maliyet mi üretir, yoksa risk ve likiditeyi yöneterek istikrar mı sağlar?**
             """
         )
         if st.button("✅ Senaryoyu okudum, oyuna başla"):
@@ -177,170 +221,217 @@ Bu oyunda yeni kurulmuş bir ekonomide faaliyet gösteriyorsunuz.
             st.rerun()
         st.stop()
 
-    # -------------------------
-    # Turn panel
-    # -------------------------
-    turn = pl["turn"]
+    # Tur bilgisi
+    turn = int(pl["turn"])
     if turn > CFG["N_TURNS"]:
-        st.success("✅ Oyun bitti. Sağdaki panel ve lider tablosunu inceleyin.")
+        st.success("✅ Oyun bitti. Sağdaki panelden 'finansın katkısı' ve lider tablosunu inceleyin.")
     else:
         st.subheader(f"Tur {turn} / {CFG['N_TURNS']}")
+        st.write(NEWS.get(turn, ""))
+
+        # Küçük durum çubuğu
+        progress = (turn - 1) / CFG["N_TURNS"]
+        st.progress(progress)
+
         st.metric("Mevcut Servet (TL)", f"{pl['wealth']:,.0f}".replace(",", "."))
 
-        # Turn narrative
-        if turn in [1, 2]:
-            st.info("🌍 TUR 1–2: Finansal kurum yok → seçenek yok: **Direct Investment** (tekil risk).")
-        elif turn == 3:
-            st.info("🏦 TUR 3: Mevduat ve banka seçeneği açıldı → risk/likidite yönetilebilir.")
-        elif turn == CFG["CRISIS_TURN"]:
-            st.warning("⚠️ TUR 4: MAKRO KRİZ → risk artar, likidite ihtiyacı daha kritik olur.")
-        else:
-            st.info("🎯 Serbest tur: Risk–getiri–likidite dengesini siz kurun.")
-
-        # Choices by turn
+        # Seçenekler (tur 1-2 kısıt)
         options = ["Direct Investment"]
         if turn >= 3:
             options = ["Direct Investment", "Deposit", "Intermediated Investment (Banka)"]
 
         choice = st.radio("Seçiminiz:", options, horizontal=True)
 
-        with st.expander("Seçeneklerin anlamı (kısa)", expanded=False):
+        with st.expander("Seçenekler (net özet)", expanded=False):
             st.markdown(
                 f"""
-**Direct Investment:** Yüksek risk. Başarılıysa yüksek getiri, başarısızsa sert kayıp.  
-Likidite ihtiyacı gelirse ayrıca maliyet doğabilir.
+- **Direct Investment:** Yüksek risk; başarılıysa yüksek getiri, başarısızsa sert kayıp.  
+  Likidite ihtiyacı gelirse ekstra maliyet: **-%{CFG['LIQ_COST']*100:.0f}** (zararına bozdurma).
 
-**Deposit (Mevduat):** Daha güvenli ve likit. Getiri sınırlı ama istikrarlı.
+- **Deposit (Mevduat):** Daha istikrarlı, daha likit; getiri sınırlı (**%{CFG['R_DEPOSIT']*100:.0f}**).  
+  Krizde küçük negatif etki olabilir (güvenli liman ama tamamen risksiz değil).
 
-**Intermediated Investment (Banka):** Spread/komisyon ödersiniz (**{CFG['BANK_FEE']*100:.1f}%**).  
-Karşılığında sonuçlar genelde daha istikrarlıdır.
+- **Intermediated Investment (Banka):** Aracılık maliyeti (spread/komisyon): **%{CFG['BANK_FEE']*100:.0f}**.  
+  Karşılığında getiriler genelde daha istikrarlı olur (risk yönetimi + aracılık).
                 """
             )
 
         if st.button("✅ Kararı Onayla ve Sonucu Gör"):
             rng = rng_for(name, turn)
-            crisis = (turn == CFG["CRISIS_TURN"])
-            liq = liquidity_shock_happens(rng, turn)
+            state = draw_state(rng, turn)
 
-            # Decomposition
-            base_r = 0.0
-            fee_r = 0.0
-            liq_penalty_r = 0.0
-            crisis_r = 0.0
+            # Bu tur tüm seçeneklerin getirileri (aynı durum üzerinden)
+            all_choices = ["Direct Investment", "Deposit", "Intermediated Investment (Banka)"] if turn >= 3 else ["Direct Investment"]
+            alt_returns = {}
+            alt_components = {}
+            for ch in all_choices:
+                r, comp = option_return(ch, state, turn)
+                alt_returns[ch] = r
+                alt_components[ch] = comp
 
-            if choice == "Direct Investment":
-                base_r = direct_return(rng)
-                if liq:
-                    liq_penalty_r = -CFG["LIQ_COST"]
-                if crisis:
-                    crisis_r = -CFG["CRISIS_HIT_DIRECT"]
+            # Seçilen seçenek
+            total_r = alt_returns[choice]
+            comp_dict = alt_components[choice]
 
-            elif choice == "Deposit":
-                base_r = deposit_return()
-                # deposit: crisis penalty intentionally 0 for week1 message (flight-to-quality)
+            # Servet güncelle
+            old_w = float(pl["wealth"])
+            new_w = old_w * (1.0 + float(total_r))
+            pl["wealth"] = new_w
 
-            else:
-                gross, fee = bank_return_components(rng, turn)
-                base_r = gross
-                fee_r = fee
-                if crisis:
-                    crisis_r = -CFG["CRISIS_HIT_BANK"]
+            # Karşı-olgusal (finansın katkısı): Aynı turda "Direct" ile fark
+            direct_w = old_w * (1.0 + float(alt_returns["Direct Investment"]))
+            gain_vs_direct = max(0.0, new_w - direct_w)
+            pl["counterfactual_gain"] += gain_vs_direct
 
-            total_r = base_r + fee_r + liq_penalty_r + crisis_r
-
-            old_wealth = pl["wealth"]
-            new_wealth = old_wealth * (1.0 + total_r)
-            pl["wealth"] = new_wealth
-            pl["returns"].append(float(total_r))
-
-            # Teaching counterfactual: "If Direct this turn"
-            rng_cf = rng_for(name + "_cf", turn)
-            cf_base = direct_return(rng_cf)
-            cf_liq = liquidity_shock_happens(rng_cf, turn)
-            cf_r = cf_base + (-CFG["LIQ_COST"] if cf_liq else 0.0) + (-CFG["CRISIS_HIT_DIRECT"] if crisis else 0.0)
-            cf_wealth = old_wealth * (1.0 + cf_r)
-            pl["counterfactual_savings"] += max(0.0, new_wealth - cf_wealth)
-
+            # Log
             pl["log"].append({
                 "Turn": turn,
                 "Choice": choice,
-                "BaseReturn": base_r,
-                "Fee": fee_r,
-                "LiquidityPenalty": liq_penalty_r,
-                "CrisisEffect": crisis_r,
-                "TotalReturn": total_r,
-                "MacroCrisis": crisis,
-                "LiquidityShock": (liq and choice == "Direct Investment"),
-                "Wealth": new_wealth,
-                "Direct_CF_Wealth": cf_wealth
+                "TotalReturn": float(total_r),
+                "Wealth": float(new_w),
+                "Crisis": bool(state["crisis"]),
+                "LiquidityShock": bool(state["liq"]),
+                "DirectSuccess": bool(state["direct_success"]),
+                "DirectIfWealth": float(direct_w),
+                "GainVsDirect": float(gain_vs_direct),
+                "Comp_Temel": float(comp_dict["Temel getiri"]),
+                "Comp_Fee": float(comp_dict["Aracılık maliyeti (spread/komisyon)"]),
+                "Comp_Liq": float(comp_dict["Likidite ihtiyacı maliyeti"]),
+                "Comp_Crisis": float(comp_dict["Makro kriz etkisi"]),
             })
 
-            st.success(f"Toplam Getiri: %{total_r*100:.2f} | Yeni Servet: {new_wealth:,.0f} TL".replace(",", "."))
+            st.success(f"Toplam Getiri: %{total_r*100:.2f} | Yeni Servet: {new_w:,.0f} TL".replace(",", "."))
 
-            st.markdown("### Bu tur getiri nasıl oluştu? (bileşenler)")
-            comp = pd.DataFrame([
-                {"Bileşen": "Temel getiri", "Etki (%)": base_r * 100},
-                {"Bileşen": "Aracılık maliyeti (spread/komisyon)", "Etki (%)": fee_r * 100},
-                {"Bileşen": "Likidite ihtiyacı maliyeti", "Etki (%)": liq_penalty_r * 100},
-                {"Bileşen": "Makro kriz etkisi", "Etki (%)": crisis_r * 100},
-                {"Bileşen": "TOPLAM", "Etki (%)": total_r * 100},
-            ])
-            st.dataframe(comp, use_container_width=True, hide_index=True)
+            # Durum açıklaması (çok net)
+            st.markdown("### Bu tur ekonomide ne oldu?")
+            bullet = []
+            bullet.append("Makro kriz var." if state["crisis"] else "Makro kriz yok.")
+            bullet.append("Likidite ihtiyacı (acil nakit) oluştu." if state["liq"] else "Likidite ihtiyacı oluşmadı.")
+            bullet.append("Direct yatırım 'başarılı' senaryodaydı." if state["direct_success"] else "Direct yatırım 'başarısız' senaryodaydı.")
+            st.write("- " + "\n- ".join(bullet))
 
-            st.markdown("### Finansın katkısı (bu tur karşılaştırma)")
-            st.caption("Öğretici kıyas: Bu tur Direct Investment yapsaydınız tur sonu servet ne olurdu?")
-            st.write(
-                f"- Seçtiğiniz yol: **{new_wealth:,.0f} TL**\n"
-                f"- Bu tur Direct yapsaydınız: **{cf_wealth:,.0f} TL**"
-                .replace(",", ".")
+            # Bileşenler tablosu
+            st.markdown("### Getiri nasıl oluştu? (bileşenler)")
+            comp_df = pd.DataFrame(
+                [{"Bileşen": k, "Etki (%)": v * 100} for k, v in comp_dict.items()]
+            )
+            st.dataframe(comp_df, use_container_width=True, hide_index=True)
+
+            # Karşılaştırma paneli: aynı turda tüm seçeneklerin sonucu
+            st.markdown("### Aynı turda diğer seçeneklerle kıyas (finansın katkısı burada görünür)")
+            compare = []
+            for ch, r in alt_returns.items():
+                w = old_w * (1.0 + float(r))
+                compare.append({"Seçenek": ch, "Getiri (%)": float(r) * 100, "Tur Sonu Servet (TL)": w})
+            cmp_df = pd.DataFrame(compare).sort_values("Tur Sonu Servet (TL)", ascending=False)
+            st.dataframe(cmp_df, use_container_width=True, hide_index=True)
+
+            st.caption(
+                "Eğitici mesaj: Banka/mevduat seçeneği çoğu zaman 'en yüksek getiri' için değil, "
+                "'kötü senaryolarda düşüşü sınırlamak' ve 'likidite maliyetini azaltmak' için tercih edilir."
             )
 
-            # Next turn
-            pl["turn"] += 1
+            # Tur ilerlet
+            pl["turn"] = turn + 1
             st.rerun()
 
-    # Personal log
+    # Kişisel geçmiş + grafik
     if pl["log"]:
         st.markdown("## Tur Geçmişi (Kişisel)")
         df = pd.DataFrame(pl["log"])
-        df["TotalReturn %"] = df["TotalReturn"] * 100
-        show = df[["Turn","Choice","TotalReturn %","MacroCrisis","LiquidityShock","Wealth"]].copy()
-        st.dataframe(show, use_container_width=True, hide_index=True)
+        df_show = df[["Turn","Choice","TotalReturn","Wealth","Crisis","LiquidityShock","GainVsDirect"]].copy()
+        df_show["Getiri (%)"] = df_show["TotalReturn"] * 100
+        df_show["Servet (TL)"] = df_show["Wealth"]
+        df_show["Direct'e göre kazanım (TL)"] = df_show["GainVsDirect"]
+        st.dataframe(df_show[["Turn","Choice","Getiri (%)","Crisis","LiquidityShock","Servet (TL)","Direct'e göre kazanım (TL)"]],
+                     use_container_width=True, hide_index=True)
 
+        st.markdown("### Servet Zaman Serisi")
+        chart_df = df[["Turn","Wealth"]].copy()
+        chart_df = chart_df.rename(columns={"Turn":"Tur", "Wealth":"Servet"})
+        st.line_chart(chart_df.set_index("Tur"))
+
+# =========================
+# SAĞ: Öğrenme paneli + sınıf özeti + lider
+# =========================
 with right:
-    # If name not provided, right panel will be blank (handled by stop above)
-    if name:
-        pl = get_player(name)
+    if "players" in st.session_state and len(st.session_state.players) > 0:
+        # name yoksa stop olmuştu; burada güvenli olsun
+        if "name" in locals() and name:
+            pl = get_player(name)
 
-        st.subheader("🎓 Öğrenme Paneli")
-        loss_turns = sum(1 for r in pl["returns"] if r < 0)
-        st.metric("Zarar Yaşanan Tur", str(loss_turns))
-        st.metric("VaR %5 (Getiri)", f"{var5(pl)*100:.2f}%")
-        st.metric("Skor", f"{score(pl):,.0f}".replace(",", "."))
+            st.subheader("🎓 Öğrenme Paneli")
+            st.metric("VaR %5 (Getiri)", f"{var5(pl)*100:.2f}%")
+            st.metric("Skor", f"{score(pl):,.0f}".replace(",", "."))
+            st.metric("Finansın katkısı (birikimli, Direct'e göre)", f"{pl['counterfactual_gain']:,.0f} TL".replace(",", "."))
+
+            st.caption(
+                "Bu 'katkı' göstergesi şunu ölçer: Aynı turda Direct seçseydiniz oluşacak servete göre, "
+                "mevduat/banka seçimlerinizin ne kadar 'koruma' sağladığını (öğretici amaçla) toplar."
+            )
 
         st.divider()
-        st.metric("Finansın katkısı (birikimli)", f"{pl['counterfactual_savings']:,.0f} TL".replace(",", "."))
-        st.caption("Bu değer, seçtiğiniz seçeneklerin Direct’e göre koruduğu serveti öğretici amaçla gösterir.")
+        st.subheader("📊 Sınıf Özeti (bu turda ne seçiliyor?)")
+        # Her oyuncunun mevcut turunu tahmini: oyuncu kaç tur oynadıysa sonraki turda sayılır
+        # Basit yaklaşım: son log tur + 1 = current turn
+        dist = {}
+        for pname, p in st.session_state.players.items():
+            p = migrate_player(p)
+            if p["log"]:
+                current_t = min(p["log"][-1]["Turn"] + 1, CFG["N_TURNS"])
+            else:
+                current_t = 1
+            # oyuncu bitirdiyse sayma
+            if current_t > CFG["N_TURNS"]:
+                continue
+            dist.setdefault(current_t, {"Direct Investment":0, "Deposit":0, "Intermediated Investment (Banka)":0, "Players":0})
+            dist[current_t]["Players"] += 1
+            # o tur için seçim varsa say
+            choices_in_turn = [rec["Choice"] for rec in p["log"] if rec["Turn"] == current_t]
+            if choices_in_turn:
+                dist[current_t][choices_in_turn[0]] += 1
 
-    st.divider()
-    st.subheader("🏆 Lider Tablosu")
-    rows = []
-    for pname, p in st.session_state.players.items():
-        p = migrate_player(p)
-        rows.append({
-            "Oyuncu": pname,
-            "Tur": min(p["turn"] - 1, CFG["N_TURNS"]),
-            "Servet (TL)": p["wealth"],
-            "Zarar Tur": sum(1 for r in p["returns"] if r < 0),
-            "VaR %5": var5(p),
-            "Skor": score(p),
-        })
+        if dist:
+            # En çok oyuncunun olduğu turu göster
+            target_turn = sorted(dist.keys(), key=lambda t: dist[t]["Players"], reverse=True)[0]
+            d = dist[target_turn]
+            st.caption(f"En yoğun tur: Tur {target_turn} (aktif oyuncu: {d['Players']})")
+            class_df = pd.DataFrame([{
+                "Tur": target_turn,
+                "Direct Investment": d["Direct Investment"],
+                "Deposit": d["Deposit"],
+                "Intermediated Investment (Banka)": d["Intermediated Investment (Banka)"],
+            }])
+            st.dataframe(class_df, use_container_width=True, hide_index=True)
+        else:
+            st.caption("Henüz yeterli veri yok.")
 
-    if rows:
+        st.divider()
+        st.subheader("🏆 Lider Tablosu")
+        rows = []
+        for pname, p in st.session_state.players.items():
+            p = migrate_player(p)
+            # zarar tur sayısı
+            loss_turns = 0
+            rets = []
+            for rec in p["log"]:
+                rets.append(rec["TotalReturn"])
+                if rec["TotalReturn"] < 0:
+                    loss_turns += 1
+            rows.append({
+                "Oyuncu": pname,
+                "Oynanan Tur": len(p["log"]),
+                "Servet (TL)": p["wealth"],
+                "Zarar Tur": loss_turns,
+                "VaR %5": (np.percentile(np.array(rets), 5) if rets else 0.0),
+                "Skor": score(p),
+            })
+
         lb = pd.DataFrame(rows).sort_values("Skor", ascending=False)
         lb["Servet (TL)"] = lb["Servet (TL)"].round(0)
         lb["VaR %5"] = (lb["VaR %5"]*100).round(2).astype(str) + "%"
         lb["Skor"] = lb["Skor"].round(0)
         st.dataframe(lb, use_container_width=True, hide_index=True)
+
     else:
-        st.caption("Henüz oyuncu yok.")
+        st.caption("Oyuncu yok. Sol taraftan bir isim girip başlayın.")
