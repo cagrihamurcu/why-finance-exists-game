@@ -101,6 +101,10 @@ def get_player(name):
 def total_wealth(p):
     return float(sum(p["holdings"].values()))
 
+def total_investments(p):
+    # cash dışındaki her şey yatırım kabul ediliyor
+    return float(sum(v for k, v in p["holdings"].items() if k != "cash"))
+
 def rng_for(name, month):
     return np.random.default_rng((hash(name) % 10000) + month * 1000 + st.session_state.seed)
 
@@ -161,6 +165,8 @@ if month == CFG["CRISIS_MONTH"]:
     st.warning("🚨 Makro kriz ayı: bazı varlıklar sert tepki verir.")
 
 st.metric("Toplam Servet", f"{total_wealth(p):,.0f} TL".replace(",", "."))
+st.metric("Toplam Nakit", f"{p['holdings']['cash']:,.0f} TL".replace(",", "."))
+st.metric("Toplam Yatırım", f"{total_investments(p):,.0f} TL".replace(",", "."))
 
 st.write("### Mevcut Varlıklarınız (TL)")
 cur = pd.DataFrame([{"Varlık": ASSETS[k], "Tutar (TL)": p["holdings"][k]} for k in ASSETS])
@@ -183,9 +189,10 @@ st.write(f"Gelir: **{income:,.0f} TL**".replace(",", "."))
 st.write(f"Toplam gider: **{total_exp:,.0f} TL**".replace(",", "."))
 st.write(f"Bu ay tasarruf (net): **{saving:,.0f} TL**".replace(",", "."))
 
+# başlangıç servet (log için)
 start_total = total_wealth(p)
 
-# Nakit akışı (gelir ve gider)
+# nakit akışı (gelir ve gider)
 p["holdings"]["cash"] += float(income)
 p["holdings"]["cash"] -= total_exp
 
@@ -241,16 +248,11 @@ else:
 if st.button("✅ Ayı Tamamla"):
     rng = rng_for(name, month)
 
-    # Yatırıma giden toplam tutar (geçmiş tablosu için)
-    # - alloc_sum > 100 ise normalize ile tasarrufun %100'ü yatırıma gider
-    # - alloc_sum < 100 ise tasarrufun alloc_sum%'si yatırıma gider
+    # Bu ay tasarruftan yatırıma giden toplam tutar
     if saving <= 0 or (not investable) or alloc_sum <= 0:
         invested_amount = 0.0
     else:
-        if alloc_sum >= 100:
-            invested_amount = saving
-        else:
-            invested_amount = saving * (alloc_sum / 100.0)
+        invested_amount = saving if alloc_sum >= 100 else saving * (alloc_sum / 100.0)
 
     # 1) Sadece bu ayın tasarrufunu dağıt
     if saving > 0 and investable and alloc_sum > 0:
@@ -264,7 +266,7 @@ if st.button("✅ Ayı Tamamla"):
             p["holdings"][k] += invest_amt
             p["holdings"]["cash"] -= invest_amt
 
-    # 2) Kurum yokken nakit kayıp riski (Ay 1-3) — tabloya koymuyoruz ama oyunda kalsın
+    # 2) Kurum yokken nakit kayıp riski (Ay 1-3) — tabloda göstermiyoruz
     cash_loss_happened = False
     cash_loss_amt = 0.0
     if month <= 3 and p["holdings"]["cash"] > 0:
@@ -303,17 +305,17 @@ if st.button("✅ Ayı Tamamla"):
             fx_r += CFG["CRISIS_FX"]
         p["holdings"]["fx"] *= (1.0 + fx_r)
 
-    # 4) Enflasyon: oran + tutar (nakit aşınması)
+    # 4) Enflasyon: oran + tutar
     infl_rate = float(CFG["INFLATION_M"])
     inflation_amt = p["holdings"]["cash"] * infl_rate
     p["holdings"]["cash"] *= (1.0 - infl_rate)
 
-    # 5) Log (tablo için gerekli kalemler)
+    # 5) Dönem sonu özetleri
+    end_cash = float(p["holdings"]["cash"])
+    end_invest = total_investments(p)
     end_total = total_wealth(p)
-    delta = end_total - start_total
-    gain = max(delta, 0.0)
-    loss = max(-delta, 0.0)
 
+    # 6) Log (tablo için gereken sade kalemler)
     p["log"].append({
         "Ay": month,
         "Aşama": stage_label(month),
@@ -327,10 +329,11 @@ if st.button("✅ Ayı Tamamla"):
         "EnflasyonOranı(%)": infl_rate * 100,
         "EnflasyonTutarı(TL)": inflation_amt,
 
-        "Kazanç(TL)": gain,
-        "Kayıp(TL)": loss,
+        "DönemSonuNakit(TL)": end_cash,
+        "DönemSonuYatırım(TL)": end_invest,
+        "ToplamServet(TL)": end_total,
 
-        # Teknik kayıt (tabloda göstermiyoruz ama debug/analiz için kalsın)
+        # Teknik kayıt (tabloda göstermiyoruz ama grafikte kullanıyoruz)
         "Servet_Başlangıç(TL)": start_total,
         "Servet_Bitiş(TL)": end_total,
         "NakitKayıpOldu": cash_loss_happened,
@@ -347,10 +350,8 @@ if st.button("✅ Ayı Tamamla"):
 
 # =========================
 # GEÇMİŞ: SADE ÖZET (İSTEDİĞİNİZ FORMAT)
-# - Yatırıma giden toplam tutar var
-# - Nakit kayıp tutarı yok (çıkarıldı)
-# - Kazanç / Kayıp sütunları var
-# - Servet_Bitiş sütunu tabloda yok
+# - Kazanç/Kayıp yok
+# - Dönem sonu nakit, yatırım, toplam servet var
 # =========================
 if p["log"]:
     st.divider()
@@ -367,19 +368,20 @@ if p["log"]:
         "YatırımaGiden(TL)",
         "EnflasyonOranı(%)",
         "EnflasyonTutarı(TL)",
-        "Kazanç(TL)",
-        "Kayıp(TL)",
+        "DönemSonuNakit(TL)",
+        "DönemSonuYatırım(TL)",
+        "ToplamServet(TL)",
     ]].copy()
 
-    # Yuvarlama
     money_cols = [
         "Gelir(TL)",
         "ToplamGider(TL)",
         "Tasarruf(TL)",
         "YatırımaGiden(TL)",
         "EnflasyonTutarı(TL)",
-        "Kazanç(TL)",
-        "Kayıp(TL)",
+        "DönemSonuNakit(TL)",
+        "DönemSonuYatırım(TL)",
+        "ToplamServet(TL)",
     ]
     for c in money_cols:
         simple_df[c] = simple_df[c].astype(float).round(0)
@@ -388,9 +390,8 @@ if p["log"]:
 
     st.dataframe(simple_df, use_container_width=True, hide_index=True)
 
-    # Grafik: Servet (tablodan kaldırıldı ama grafikte kalsın)
     st.subheader("📈 Servet Zaman Serisi")
-    st.line_chart(df.set_index("Ay")["Servet_Bitiş(TL)"])
+    st.line_chart(df.set_index("Ay")["ToplamServet(TL)"])
 
 # =========================
 # LİDER TABLOSU
