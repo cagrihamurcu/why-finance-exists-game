@@ -1,4 +1,3 @@
-import time
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -41,15 +40,6 @@ CFG = {
 
     # Kredi faizi (aylık)
     "LOAN_RATE": 0.025,  # %2.5 / ay
-
-    # Karar süreleri (saniye)
-    "TIMER_STAGE_1": 60,  # Ay 1-3
-    "TIMER_STAGE_2": 75,  # Ay 4-5
-    "TIMER_STAGE_3": 75,  # Ay 6-7
-    "TIMER_STAGE_4": 90,  # Ay 8-12
-
-    # Sayfa yenileme aralığı (sn) - paket yoksa timer için
-    "REFRESH_SEC": 1.0,
 }
 
 ASSETS = {
@@ -84,38 +74,10 @@ def can_borrow(month: int) -> bool:
     return month >= 4
 
 # =========================
-# TIMER (Deadline mantığı)
-# =========================
-def stage_time_limit_seconds(month: int) -> int:
-    if month <= 3:
-        return int(CFG["TIMER_STAGE_1"])
-    if month <= 5:
-        return int(CFG["TIMER_STAGE_2"])
-    if month <= 7:
-        return int(CFG["TIMER_STAGE_3"])
-    return int(CFG["TIMER_STAGE_4"])
-
-def ensure_timer(p: dict, month: int):
-    key = f"deadline_m{month}"
-    if key not in p:
-        p[key] = time.time() + stage_time_limit_seconds(month)
-
-def time_left_seconds(p: dict, month: int) -> int:
-    key = f"deadline_m{month}"
-    deadline = float(p.get(key, time.time()))
-    return max(int(deadline - time.time()), 0)
-
-def format_mmss(seconds: int) -> str:
-    m = seconds // 60
-    s = seconds % 60
-    return f"{m:02d}:{s:02d}"
-
-# =========================
 # SESSION
 # =========================
 if "seed" not in st.session_state:
     st.session_state.seed = 20260209
-
 if "players" not in st.session_state:
     st.session_state.players = {}
 
@@ -161,7 +123,7 @@ st.caption(
     "Kurallar: (i) Ay 1–3 borç yok: gider+harcama nakit+geliri aşarsa temerrüt. "
     "(ii) Ay 4+ borç var: açık otomatik krediyle kapanır. "
     "(iii) Ay sonunda (Ay 4+) borç geri ödeme seçeneği vardır. "
-    "(iv) Her ay süre var; süre dolunca girişler kilitlenir ve yatırım=0, borç ödeme=0 kabul edilir. "
+    "(iv) Nakit enflasyonla erir. "
     "(v) Oyun 12. ay sonunda biter."
 )
 
@@ -171,7 +133,7 @@ with c1:
         st.session_state.clear()
         st.rerun()
 with c2:
-    st.caption("Parametreler sabit: sınıfta karşılaştırma kolay olsun diye.")
+    st.caption("Süre yok: ekran stabil ve akış net.")
 
 name = st.text_input("Oyuncu Adı")
 if not name:
@@ -229,11 +191,11 @@ st.dataframe(lb, use_container_width=True, hide_index=True)
 st.divider()
 
 # =========================
-# OYUN BİTTİ DURUMU
+# OYUN BİTTİ
 # =========================
 if p.get("finished", False):
     if p.get("defaulted", False):
-        st.error("⛔ Oyun bitti: Ay 1–3 döneminde temerrüt (borç yokken açık oluştu).")
+        st.error("⛔ Oyun bitti: Ay 1–3 döneminde temerrüt.")
     else:
         st.success("✅ Oyun bitti (12. ay tamamlandı).")
 
@@ -272,13 +234,8 @@ month = int(p["month"])
 opened = open_assets_by_month(month)
 investable = [k for k in opened if k != "cash"]
 
-ensure_timer(p, month)
-left = time_left_seconds(p, month)
-time_up = (left == 0)
-
-st.subheader(f"📅 Ay {month} / {CFG['MONTHS']}")
+st.subheader(f"📅 Ay {month} / {CFG['MONTHS']} | Aşama: {stage_label(month)}")
 st.progress((month - 1) / CFG["MONTHS"])
-st.info(f"⏳ Kalan karar süresi: **{format_mmss(left)}** | Aşama: **{stage_label(month)}**")
 if month == CFG["CRISIS_MONTH"]:
     st.warning("🚨 Kriz ayı: bazı varlıklarda ekstra şok var.")
 
@@ -301,14 +258,7 @@ available_without_borrow = p["holdings"]["cash"] + income
 extra_max = int(max(0.0, available_without_borrow - fixed)) if not can_borrow(month) else int(income * 3)
 
 extra_default = min(5000, max(0, extra_max))
-extra = st.number_input(
-    "Ek Harcama",
-    0,
-    max(0, extra_max),
-    extra_default,
-    1000,
-    disabled=time_up
-)
+extra = st.number_input("Ek Harcama", 0, max(0, extra_max), extra_default, 1000)
 
 total_exp = fixed + float(extra)
 saving = max(income - total_exp, 0.0)
@@ -347,7 +297,6 @@ else:
                 value=0,
                 step=5,
                 label_visibility="collapsed",
-                disabled=time_up
             )
         with cC:
             st.write("%")
@@ -367,27 +316,14 @@ else:
     if float(p["debt"]) <= 0:
         st.caption("Borcunuz yok.")
     else:
-        repay_pct = st.slider(
-            "Borcun ne kadarını ödemek istersiniz? (%)",
-            0, 100, 20, 5,
-            disabled=time_up
-        )
-
-# Süre dolduysa kararları sıfırla
-if time_up:
-    alloc = {}
-    alloc_sum = 0.0
-    repay_pct = 0
-    st.warning("⏱️ Süre doldu: yatırım=0 ve borç ödeme=0 uygulanacak.")
+        repay_pct = st.slider("Borcun ne kadarını ödemek istersiniz? (%)", 0, 100, 20, 5)
 
 # =========================
 # AYI TAMAMLA
 # =========================
 btn_label = "✅ Ayı Tamamla" if month < CFG["MONTHS"] else "✅ 12. Ayı Tamamla ve Bitir"
 
-clicked = st.button(btn_label)
-
-if clicked:
+if st.button(btn_label):
     rng = rng_for(name, month)
 
     invested_amount = 0.0
@@ -400,6 +336,7 @@ if clicked:
     # 1) Giderleri öde
     p["holdings"]["cash"] -= total_exp
 
+    # açık oluştuysa
     if p["holdings"]["cash"] < 0:
         deficit = -float(p["holdings"]["cash"])
         if not can_borrow(month):
@@ -430,7 +367,7 @@ if clicked:
             p["debt"] += deficit
             p["holdings"]["cash"] = 0.0
 
-    # 2) Yatırım transferi
+    # 2) Yatırım transferi (tasarruf)
     if saving > 0 and investable and alloc_sum > 0:
         invested_amount = saving if alloc_sum >= 100 else saving * (alloc_sum / 100.0)
 
@@ -496,11 +433,11 @@ if clicked:
         p["debt"] *= (1.0 + float(CFG["LOAN_RATE"]))
 
     # 6) Enflasyon kaybı (nakit)
-    infl_rate = float(CFG["INFLATION_M"])
-    inflation_loss = float(p["holdings"]["cash"]) * infl_rate
-    p["holdings"]["cash"] *= (1.0 - infl_rate)
+    infl = float(CFG["INFLATION_M"])
+    inflation_loss = float(p["holdings"]["cash"]) * infl
+    p["holdings"]["cash"] *= (1.0 - infl)
 
-    # 7) Borç geri ödeme
+    # 7) Borç ödeme
     if can_borrow(month) and float(p["debt"]) > 0 and repay_pct > 0:
         target = float(p["debt"]) * (float(repay_pct) / 100.0)
         repay_amt = min(float(p["holdings"]["cash"]), target)
@@ -558,11 +495,3 @@ if p["log"]:
         if "(TL)" in col:
             simple_df[col] = pd.to_numeric(simple_df[col], errors="coerce").fillna(0).round(0)
     st.dataframe(simple_df, use_container_width=True, hide_index=True)
-
-# =========================
-# CANLI TIMER - EN SONDA!
-# (Aksi halde sayfa aşağıya inmeden rerun olur)
-# =========================
-if (not p.get("finished", False)) and (left > 0):
-    time.sleep(float(CFG["REFRESH_SEC"]))
-    st.rerun()
