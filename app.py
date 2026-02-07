@@ -40,6 +40,9 @@ CFG = {
     "CRISIS_CR": -0.20,
     "CRISIS_PM": +0.04,
     "CRISIS_FX": +0.07,
+
+    # Kredi faizi (aylık) - bankacılık açılınca borç mümkündür
+    "LOAN_RATE": 0.025,  # %2.5 / ay
 }
 
 ASSETS = {
@@ -56,6 +59,10 @@ ASSETS = {
 # AŞAMALI ÜRÜN AÇILIMI
 # =========================
 def open_assets_by_month(month: int):
+    # Ay 1-3 : kurum yok -> sadece cash
+    # Ay 4-5 : bankacılık -> dd, td (+ kredi mümkün)
+    # Ay 6-7 : korunma -> fx, pm
+    # Ay 8-12: piyasa -> eq, cr
     if month <= 3:
         return ["cash"]
     if month <= 5:
@@ -69,6 +76,9 @@ def stage_label(month: int):
     if month <= 5: return "2-Banka"
     if month <= 7: return "3-Korunma"
     return "4-Piyasa"
+
+def can_borrow(month: int) -> bool:
+    return month >= 4  # bankacılık aşaması ve sonrası
 
 # =========================
 # SESSION
@@ -84,21 +94,27 @@ def get_player(name):
         st.session_state.players[name] = {
             "month": 1,
             "finished": False,
+            "defaulted": False,   # kurum yokken ödeme aksarsa temerrüt
             "income": None,
             "fixed": None,
+            "debt": 0.0,          # borç (TL)
             "holdings": {k: 0.0 for k in ASSETS},
             "log": []
         }
     for k in ASSETS:
         st.session_state.players[name]["holdings"].setdefault(k, 0.0)
+    st.session_state.players[name].setdefault("debt", 0.0)
     st.session_state.players[name].setdefault("finished", False)
+    st.session_state.players[name].setdefault("defaulted", False)
     return st.session_state.players[name]
 
-def total_wealth(p):
-    return float(sum(p["holdings"].values()))
-
 def total_investments(p):
+    # cash dışındaki her şey yatırım kabul ediliyor
     return float(sum(v for k, v in p["holdings"].items() if k != "cash"))
+
+def net_wealth(p):
+    # NET SERVET = varlıklar - borç
+    return float(p["holdings"]["cash"] + total_investments(p) - float(p["debt"]))
 
 def rng_for(name, month):
     return np.random.default_rng((hash(name) % 10000) + month * 1000 + st.session_state.seed)
@@ -107,7 +123,10 @@ def rng_for(name, month):
 # UI
 # =========================
 st.title("🎮 Finansal Piyasalar Neden Var? (1. Hafta Oyunu)")
-st.caption("Tasarruf = Gelir − (Sabit Gider + Ek Harcama). State sadece 'Ayı Tamamla' ile güncellenir. Oyun 12. ay sonunda biter.")
+st.caption(
+    "Kural: Gider+Harcama nakdi aşarsa bankacılık aşamasında otomatik borçlanırsınız. "
+    "Ay 1–3'te borç yok: ödeme aksarsa temerrüt ve oyun biter. Oyun 12. ay sonunda biter."
+)
 
 top1, top2 = st.columns([1, 3])
 with top1:
@@ -131,27 +150,38 @@ if p["income"] is None:
     st.subheader("Başlangıç Bilgileri")
     income = st.number_input("Aylık Gelir", 20000, 500000, 60000, 5000)
     fixed = st.number_input("Sabit Gider", 10000, 400000, 30000, 5000)
+
+    # Basit güvenlik: sabit gider geliri aşarsa erken temerrüt çok olası.
+    if fixed > income:
+        st.warning("Sabit gider geliri aşıyor. (İlk 3 ay borç yok → temerrüt riski çok artar.)")
+
     if st.button("Başla"):
         p["income"] = float(income)
         p["fixed"] = float(fixed)
         st.rerun()
     st.stop()
 
-# Oyun bittiyse
+# Oyun bittiyse (12 ay tamamlandı veya temerrüt)
 if p.get("finished", False):
-    st.success("✅ Oyun bitti (12. ay tamamlandı). Yeni ay ilerlemesi kapalı.")
-    st.metric("Toplam Servet", f"{total_wealth(p):,.0f} TL".replace(",", "."))
+    if p.get("defaulted", False):
+        st.error("⛔ Oyun bitti: Kurum yokken ödeme aksadı (temerrüt). Finansal kurumların rolü burada görünür hale gelir.")
+    else:
+        st.success("✅ Oyun bitti (12. ay tamamlandı).")
+
     st.metric("Toplam Nakit", f"{p['holdings']['cash']:,.0f} TL".replace(",", "."))
     st.metric("Toplam Yatırım", f"{total_investments(p):,.0f} TL".replace(",", "."))
+    st.metric("Toplam Borç", f"{p['debt']:,.0f} TL".replace(",", "."))
+    st.metric("Toplam Servet (Net)", f"{net_wealth(p):,.0f} TL".replace(",", "."))
 
     if p["log"]:
         st.divider()
         st.subheader("📒 Geçmiş (Sade Özet)")
         df = pd.DataFrame(p["log"]).copy()
+
         simple_df = df[[
-            "Ay", "Aşama", "Gelir(TL)", "ToplamGider(TL)", "Tasarruf(TL)",
-            "YatırımaGiden(TL)", "EnflasyonOranı(%)", "EnflasyonTutarı(TL)",
-            "DönemSonuNakit(TL)", "DönemSonuYatırım(TL)", "ToplamServet(TL)"
+            "Ay","Aşama","Gelir(TL)","ToplamGider(TL)","Tasarruf(TL)","YatırımaGiden(TL)",
+            "EnflasyonOranı(%)","EnflasyonTutarı(TL)",
+            "DönemSonuNakit(TL)","DönemSonuYatırım(TL)","DönemSonuBorç(TL)","ToplamServet(TL)"
         ]].copy()
 
         money_cols = [c for c in simple_df.columns if "(TL)" in c]
@@ -160,16 +190,10 @@ if p.get("finished", False):
         simple_df["EnflasyonOranı(%)"] = simple_df["EnflasyonOranı(%)"].astype(float).round(2)
 
         st.dataframe(simple_df, use_container_width=True, hide_index=True)
-        st.subheader("📈 Servet Zaman Serisi")
+
+        st.subheader("📈 Toplam Servet (Net) Zaman Serisi")
         st.line_chart(df.set_index("Ay")["ToplamServet(TL)"])
 
-    st.divider()
-    st.subheader("🏆 Lider Tablosu")
-    rows = []
-    for pname, pp in st.session_state.players.items():
-        rows.append({"Oyuncu": pname, "Ay": min(pp["month"]-1, CFG["MONTHS"]), "Servet": total_wealth(pp)})
-    lb = pd.DataFrame(rows).sort_values("Servet", ascending=False)
-    st.dataframe(lb, use_container_width=True, hide_index=True)
     st.stop()
 
 # =========================
@@ -183,9 +207,9 @@ st.subheader(f"📅 Ay {month} / {CFG['MONTHS']}")
 st.progress((month - 1) / CFG["MONTHS"])
 
 if month <= 3:
-    st.info("Aşama 1 (Ay 1–3): Finansal kurum yok → sadece Nakit. (Enflasyon + nakit kaybı riski)")
+    st.info("Aşama 1 (Ay 1–3): Finansal kurum yok → borç yok. (Enflasyon + nakit kaybı riski)")
 elif month <= 5:
-    st.success("Aşama 2 (Ay 4–5): Bankacılık devrede → Vadesiz/Vadeli açıldı.")
+    st.success("Aşama 2 (Ay 4–5): Bankacılık devrede → Vadesiz/Vadeli açıldı + borç mümkün.")
 elif month <= 7:
     st.success("Aşama 3 (Ay 6–7): Korunma araçları devrede → Döviz/Metal açıldı.")
 else:
@@ -194,12 +218,14 @@ else:
 if month == CFG["CRISIS_MONTH"]:
     st.warning("🚨 Makro kriz ayı: bazı varlıklar sert tepki verir.")
 
-st.metric("Toplam Servet", f"{total_wealth(p):,.0f} TL".replace(",", "."))
 st.metric("Toplam Nakit", f"{p['holdings']['cash']:,.0f} TL".replace(",", "."))
 st.metric("Toplam Yatırım", f"{total_investments(p):,.0f} TL".replace(",", "."))
+st.metric("Toplam Borç", f"{p['debt']:,.0f} TL".replace(",", "."))
+st.metric("Toplam Servet (Net)", f"{net_wealth(p):,.0f} TL".replace(",", "."))
 
 st.write("### Mevcut Varlıklarınız (TL)")
 cur = pd.DataFrame([{"Varlık": ASSETS[k], "Tutar (TL)": p["holdings"][k]} for k in ASSETS])
+cur = pd.concat([cur, pd.DataFrame([{"Varlık": "Borç (Kredi)", "Tutar (TL)": -float(p["debt"])}])], ignore_index=True)
 st.dataframe(cur, use_container_width=True, hide_index=True)
 
 # =========================
@@ -210,7 +236,12 @@ st.subheader("1) Bu Ay Bütçe (Önizleme)")
 
 income = float(p["income"])
 fixed = float(p["fixed"])
-extra = st.number_input("Ek Harcama", 0, int(income), 5000, 1000)
+
+# Ay 1-3: borç yok -> gider/harcama, nakit + gelirden fazla olamaz (aksi temerrüt)
+available_without_borrow = p["holdings"]["cash"] + income
+extra_max = int(max(0.0, available_without_borrow - fixed)) if not can_borrow(month) else int(income * 3)
+
+extra = st.number_input("Ek Harcama", 0, max(0, extra_max), min(5000, max(0, extra_max)), 1000)
 
 total_exp = fixed + float(extra)
 saving = max(income - total_exp, 0.0)
@@ -219,8 +250,15 @@ st.write(f"Gelir: **{income:,.0f} TL**".replace(",", "."))
 st.write(f"Toplam gider: **{total_exp:,.0f} TL**".replace(",", "."))
 st.write(f"Bu ay tasarruf (net): **{saving:,.0f} TL**".replace(",", "."))
 
-cash_after_cashflow_preview = max(p["holdings"]["cash"] + income - total_exp, 0.0)
-st.caption(f"Önizleme: Gelir/gider sonrası nakit (yatırım & enflasyon öncesi): {cash_after_cashflow_preview:,.0f} TL".replace(",", "."))
+if not can_borrow(month) and total_exp > available_without_borrow:
+    st.error("Ay 1–3'te borç yok. Bu bütçe nakit+geliri aşıyor → temerrüt olur. Ek harcamayı düşürün.")
+
+# Önizleme nakit (yatırım ve enflasyon öncesi):
+cash_after_cashflow_preview = p["holdings"]["cash"] + income - total_exp
+st.caption(
+    "Önizleme: Gelir/gider sonrası nakit (yatırım & enflasyon öncesi): "
+    f"{cash_after_cashflow_preview:,.0f} TL".replace(",", ".")
+)
 
 # =========================
 # 2) YATIRIM KARARI (ÖNİZLEME)
@@ -236,7 +274,7 @@ if saving <= 0:
 elif not investable:
     st.caption("Bu ay yatırım ürünü yok → tasarruf nakitte kalır.")
 else:
-    st.caption("Sadece sayı girin. Yan tarafta % görünür. Toplam 100'ü aşarsa otomatik normalize edilir. Kalan otomatik Nakit'te kalır.")
+    st.caption("Sadece sayı girin. Yan tarafta % görünür. Toplam 100'ü aşarsa otomatik normalize edilir.")
     for k in investable:
         c1, c2, c3 = st.columns([2.8, 1.2, 0.6])
         with c1:
@@ -252,57 +290,102 @@ else:
             )
         with c3:
             st.write("%")
-
     alloc_sum = float(sum(alloc.values()))
     st.write(f"Toplam (yatırım ürünleri): **{int(alloc_sum)} %**")
 
-    if alloc_sum < 100:
-        st.info(f"Kalan **{int(100-alloc_sum)} %** otomatik olarak **Nakit**'te kalacak.")
-    elif alloc_sum > 100:
-        st.warning("Toplam 100'ü geçti. Oranlar otomatik 100'e ölçeklenecek (normalize).")
-
 # =========================
-# AYI TAMAMLA (STATE GÜNCELLE)
+# AYI TAMAMLA
 # =========================
-disable_finish = (month > CFG["MONTHS"]) or p.get("finished", False)
 btn_label = "✅ Ayı Tamamla" if month < CFG["MONTHS"] else "✅ 12. Ayı Tamamla ve Bitir"
-
-if st.button(btn_label, disabled=disable_finish):
+if st.button(btn_label):
     rng = rng_for(name, month)
 
-    start_total = total_wealth(p)
+    # Başlangıç snapshot
+    start_cash = float(p["holdings"]["cash"])
+    start_debt = float(p["debt"])
 
-    # 0) Nakit akışı
+    # 0) Gelir ekle
     p["holdings"]["cash"] += income
-    p["holdings"]["cash"] -= total_exp
-    if p["holdings"]["cash"] < 0:
-        p["holdings"]["cash"] = 0.0
 
-    # 1) Yatırım transferi (tasarruf üzerinden)
+    # 1) Giderleri ödeme: nakit yetmezse borç/temerrüt
+    p["holdings"]["cash"] -= total_exp
+
+    if p["holdings"]["cash"] < 0:
+        deficit = -float(p["holdings"]["cash"])
+
+        if not can_borrow(month):
+            # Kurum yok -> borç yok -> temerrüt ve oyun biter
+            p["holdings"]["cash"] = 0.0
+            p["defaulted"] = True
+            p["finished"] = True
+
+            # Log (temerrüte kadar olan durum)
+            end_cash = float(p["holdings"]["cash"])
+            end_invest = total_investments(p)
+            end_debt = float(p["debt"])
+            end_total = end_cash + end_invest - end_debt
+
+            infl_rate = float(CFG["INFLATION_M"])
+            inflation_amt = 0.0  # temerrütte enflasyon/ getiriler uygulanmıyor (ders mesajı net olsun)
+
+            invested_amount = 0.0
+
+            p["log"].append({
+                "Ay": month,
+                "Aşama": stage_label(month),
+                "Gelir(TL)": income,
+                "ToplamGider(TL)": total_exp,
+                "Tasarruf(TL)": saving,
+                "YatırımaGiden(TL)": invested_amount,
+                "EnflasyonOranı(%)": infl_rate * 100,
+                "EnflasyonTutarı(TL)": inflation_amt,
+                "DönemSonuNakit(TL)": end_cash,
+                "DönemSonuYatırım(TL)": end_invest,
+                "DönemSonuBorç(TL)": end_debt,
+                "ToplamServet(TL)": end_total,
+            })
+
+            st.rerun()
+
+        else:
+            # Banka var -> otomatik borçlan
+            p["debt"] += deficit
+            p["holdings"]["cash"] = 0.0
+
+    # 2) Bu ay tasarruftan yatırıma giden tutar (tasarruf üzerinden)
     if saving <= 0 or (not investable) or alloc_sum <= 0:
         invested_amount = 0.0
         alloc_adj = {}
     else:
         invested_amount = saving if alloc_sum >= 100 else saving * (alloc_sum / 100.0)
+        alloc_adj = dict(alloc)
         if alloc_sum > 100:
             alloc_adj = {k: (v / alloc_sum) * 100 for k, v in alloc.items()}
-        else:
-            alloc_adj = dict(alloc)
 
+        # Yatırımı uygula
         for k, pct in alloc_adj.items():
             invest_amt = saving * (pct / 100.0)
             p["holdings"][k] += invest_amt
             p["holdings"]["cash"] -= invest_amt
 
+        # Eğer yatırımlar nakdi negatife ittiyse (tasarruf>cash ise), bankacılık varsa borçlan; yoksa temerrüt
         if p["holdings"]["cash"] < 0:
-            p["holdings"]["cash"] = 0.0
+            deficit2 = -float(p["holdings"]["cash"])
+            if can_borrow(month):
+                p["debt"] += deficit2
+                p["holdings"]["cash"] = 0.0
+            else:
+                p["holdings"]["cash"] = 0.0
+                p["defaulted"] = True
+                p["finished"] = True
+                st.rerun()
 
-    # 2) Kurum yokken nakit kayıp riski
+    # 3) Kurum yokken nakit kayıp riski (Ay 1-3) (oyunda kalsın)
     if month <= 3 and p["holdings"]["cash"] > 0:
         if rng.random() < CFG["CASH_LOSS_PROB"]:
             p["holdings"]["cash"] -= p["holdings"]["cash"] * CFG["CASH_LOSS_SEV"]
 
-    # 3) Getiriler
+    # 4) Getiriler
     if "dd" in opened:
         p["holdings"]["dd"] *= (1.0 + CFG["DD_RATE"])
     if "td" in opened:
@@ -332,17 +415,22 @@ if st.button(btn_label, disabled=disable_finish):
             fx_r += CFG["CRISIS_FX"]
         p["holdings"]["fx"] *= (1.0 + fx_r)
 
-    # 4) Enflasyon
+    # 5) Borç faizi (bankacılık varsa borç büyür)
+    if can_borrow(month) and p["debt"] > 0:
+        p["debt"] *= (1.0 + float(CFG["LOAN_RATE"]))
+
+    # 6) Enflasyon: nakit aşınması
     infl_rate = float(CFG["INFLATION_M"])
     inflation_amt = p["holdings"]["cash"] * infl_rate
     p["holdings"]["cash"] *= (1.0 - infl_rate)
 
-    # 5) Dönem sonu özetleri
+    # 7) Dönem sonu değerler
     end_cash = float(p["holdings"]["cash"])
     end_invest = total_investments(p)
-    end_total = total_wealth(p)
+    end_debt = float(p["debt"])
+    end_total = end_cash + end_invest - end_debt
 
-    # 6) Log
+    # 8) Log
     p["log"].append({
         "Ay": month,
         "Aşama": stage_label(month),
@@ -354,12 +442,11 @@ if st.button(btn_label, disabled=disable_finish):
         "EnflasyonTutarı(TL)": inflation_amt,
         "DönemSonuNakit(TL)": end_cash,
         "DönemSonuYatırım(TL)": end_invest,
+        "DönemSonuBorç(TL)": end_debt,
         "ToplamServet(TL)": end_total,
-        "Servet_Başlangıç(TL)": start_total,
-        "Servet_Bitiş(TL)": end_total,
     })
 
-    # 7) Ay ilerlet / oyunu bitir
+    # 9) Ay ilerlet / bitir
     if month >= CFG["MONTHS"]:
         p["finished"] = True
     else:
@@ -377,17 +464,9 @@ if p["log"]:
     df = pd.DataFrame(p["log"]).copy()
 
     simple_df = df[[
-        "Ay",
-        "Aşama",
-        "Gelir(TL)",
-        "ToplamGider(TL)",
-        "Tasarruf(TL)",
-        "YatırımaGiden(TL)",
-        "EnflasyonOranı(%)",
-        "EnflasyonTutarı(TL)",
-        "DönemSonuNakit(TL)",
-        "DönemSonuYatırım(TL)",
-        "ToplamServet(TL)",
+        "Ay","Aşama","Gelir(TL)","ToplamGider(TL)","Tasarruf(TL)","YatırımaGiden(TL)",
+        "EnflasyonOranı(%)","EnflasyonTutarı(TL)",
+        "DönemSonuNakit(TL)","DönemSonuYatırım(TL)","DönemSonuBorç(TL)","ToplamServet(TL)"
     ]].copy()
 
     money_cols = [c for c in simple_df.columns if "(TL)" in c]
@@ -397,7 +476,7 @@ if p["log"]:
 
     st.dataframe(simple_df, use_container_width=True, hide_index=True)
 
-    st.subheader("📈 Servet Zaman Serisi")
+    st.subheader("📈 Toplam Servet (Net) Zaman Serisi")
     st.line_chart(df.set_index("Ay")["ToplamServet(TL)"])
 
 # =========================
@@ -407,8 +486,14 @@ st.divider()
 st.subheader("🏆 Lider Tablosu")
 rows = []
 for pname, pp in st.session_state.players.items():
-    # ay sayısını 12 ile sınırla
     ay_sayisi = CFG["MONTHS"] if pp.get("finished", False) else max(pp["month"] - 1, 0)
-    rows.append({"Oyuncu": pname, "Ay": ay_sayisi, "Servet": total_wealth(pp)})
-lb = pd.DataFrame(rows).sort_values("Servet", ascending=False)
+    rows.append({
+        "Oyuncu": pname,
+        "Ay": ay_sayisi,
+        "Servet(Net)": net_wealth(pp),
+        "Borç": float(pp.get("debt", 0.0)),
+    })
+lb = pd.DataFrame(rows).sort_values("Servet(Net)", ascending=False)
+lb["Servet(Net)"] = lb["Servet(Net)"].round(0)
+lb["Borç"] = lb["Borç"].round(0)
 st.dataframe(lb, use_container_width=True, hide_index=True)
