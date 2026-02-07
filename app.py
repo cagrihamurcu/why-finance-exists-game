@@ -4,52 +4,38 @@ import pandas as pd
 
 st.set_page_config(page_title="1. Hafta Oyunu — Finans Neden Var?", layout="wide")
 
-# =========================
-# KONFİGÜRASYON
-# =========================
 CFG = {
     "MONTHS": 12,
-    "NO_INSTITUTIONS_UNTIL": 3,   # 1-3: kurum yok, 4+ kurum var
+    "NO_INSTITUTIONS_UNTIL": 3,
 
-    # Enflasyon (nakit erimesi) — aylık
-    "INFLATION_M": 0.020,  # %2
+    "INFLATION_M": 0.020,
 
-    # Kurum yokken "evde nakit" riski (kayıp/çalınma)
-    "CASH_LOSS_PROB": 0.05,   # %5 ihtimal
-    "CASH_LOSS_SEV": 0.10,    # olursa %10 kayıp
+    "CASH_LOSS_PROB": 0.05,
+    "CASH_LOSS_SEV": 0.10,
 
-    # Vadesiz (çok düşük getiri)
-    "DD_RATE_M": 0.002,       # %0.2/ay
+    "DD_RATE_M": 0.002,
+    "TD_RATE_M": 0.010,
+    "TD_EARLY_WITHDRAW_PENALTY": 0.015,
 
-    # Vadeli (daha yüksek, likidite kısıtı simüle edilir)
-    "TD_RATE_M": 0.010,       # %1/ay
-    "TD_EARLY_WITHDRAW_PENALTY": 0.015,  # vadeli bozulursa -%1.5 ceza
-
-    # Hisse senedi (aylık beklenen + volatilite)
     "EQ_MU": 0.012,
     "EQ_SIG": 0.055,
 
-    # Kripto (yüksek volatilite)
     "CR_MU": 0.020,
     "CR_SIG": 0.120,
 
-    # Kıymetli metal
     "PM_MU": 0.008,
     "PM_SIG": 0.030,
 
-    # Döviz (kur hareketi)
     "FX_MU": 0.010,
     "FX_SIG": 0.040,
 
-    # Makro kriz ayı (haber + şok)
     "CRISIS_MONTH": 6,
-    "CRISIS_EQ_HIT": -0.10,   # hisseye ek darbe
-    "CRISIS_CR_HIT": -0.18,   # kriptoya ek darbe
-    "CRISIS_FX_BOOST": +0.06, # dövize ek pozitif şok
-    "CRISIS_PM_BOOST": +0.03, # metale ek pozitif
+    "CRISIS_EQ_HIT": -0.10,
+    "CRISIS_CR_HIT": -0.18,
+    "CRISIS_FX_BOOST": +0.06,
+    "CRISIS_PM_BOOST": +0.03,
 
-    # Skor: "yaşam sürdürülebilirliği" için ceza
-    "NEG_CASHFLOW_PENALTY": 150_000.0,  # gideri karşılayamazsa ceza
+    "NEG_CASHFLOW_PENALTY": 150_000.0,
 }
 
 ASSET_LABELS = {
@@ -62,12 +48,8 @@ ASSET_LABELS = {
     "fx": "Döviz",
 }
 
-# =========================
-# SESSION STATE
-# =========================
 if "seed" not in st.session_state:
     st.session_state.seed = 20260209
-
 if "players" not in st.session_state:
     st.session_state.players = {}
 
@@ -77,8 +59,7 @@ def migrate_player(pl):
     if "income" not in pl: pl["income"] = None
     if "fixed_exp" not in pl: pl["fixed_exp"] = None
     if "wealth" not in pl: pl["wealth"] = 0.0
-    if "holdings" not in pl:
-        pl["holdings"] = {k: 0.0 for k in ASSET_LABELS.keys()}
+    if "holdings" not in pl: pl["holdings"] = {k: 0.0 for k in ASSET_LABELS.keys()}
     if "log" not in pl: pl["log"] = []
     if "penalty" not in pl: pl["penalty"] = 0.0
     return pl
@@ -104,21 +85,14 @@ def rng_for(name: str, month: int):
 def institutions_available(month: int):
     return month > CFG["NO_INSTITUTIONS_UNTIL"]
 
-def available_assets(month: int):
-    if not institutions_available(month):
-        return ["cash"]  # sadece elde nakit
-    # Kullanıcıya nakit yüzdesi girdirmiyoruz; kalan otomatik nakit
-    return ["dd", "td", "eq", "cr", "pm", "fx"]
-
 def apply_returns(holdings: dict, name: str, month: int):
-    """Ay sonunda varlık getirilerini uygular, şokları döndürür."""
     rng = rng_for(name, month)
     crisis = (month == CFG["CRISIS_MONTH"])
-
     infl = -CFG["INFLATION_M"]
 
     cash_loss = False
     cash_loss_amt = 0.0
+
     if not institutions_available(month):
         if rng.random() < CFG["CASH_LOSS_PROB"] and holdings["cash"] > 0:
             cash_loss = True
@@ -147,23 +121,17 @@ def apply_returns(holdings: dict, name: str, month: int):
 
         shocks = {
             "crisis": crisis,
-            "eq_r": eq_r,
-            "cr_r": cr_r,
-            "pm_r": pm_r,
-            "fx_r": fx_r,
+            "eq_r": eq_r, "cr_r": cr_r, "pm_r": pm_r, "fx_r": fx_r,
             "infl": infl,
-            "cash_loss": cash_loss,
-            "cash_loss_amt": cash_loss_amt,
+            "cash_loss": cash_loss, "cash_loss_amt": cash_loss_amt,
         }
     else:
         shocks = {
             "crisis": crisis,
             "infl": infl,
-            "cash_loss": cash_loss,
-            "cash_loss_amt": cash_loss_amt,
+            "cash_loss": cash_loss, "cash_loss_amt": cash_loss_amt,
         }
 
-    # Nakit için enflasyon aşınması
     if holdings["cash"] > 0:
         holdings["cash"] *= (1.0 + infl)
 
@@ -179,7 +147,7 @@ def score(pl):
 # UI
 # =========================
 st.title("🎮 1. Hafta: Neden Finansal Piyasalar ve Kurumlarla İlgilenmekteyiz?")
-st.caption("Gelir → Gider → Tasarruf → Yatırım akışı ile finansal kurumların (ürün çeşitliliği, risk yönetimi, likidite) katkısını deneyimlersiniz.")
+st.caption("Gelir → Gider → Tasarruf → Yatırım akışı: kurumlar yokken kısıt ve maliyet, kurumlar varken ürün çeşitliliği ve risk yönetimi.")
 
 top1, top2 = st.columns([1, 3])
 with top1:
@@ -188,7 +156,7 @@ with top1:
         st.success("Sıfırlandı.")
         st.rerun()
 with top2:
-    st.caption("Kod güncellemesi sonrası hata olursa önce 'Oyunu Sıfırla'ya basın.")
+    st.caption("Kod güncellemesi sonrası sorun olursa 'Oyunu Sıfırla'ya basın.")
 
 left, right = st.columns([2.2, 1])
 
@@ -199,19 +167,16 @@ with left:
 
     pl = get_player(name)
 
-    # Senaryo kapısı
     if not pl["scenario_ok"]:
         st.subheader("📌 Senaryo (kısa)")
         st.markdown(
             f"""
-Siz bir ekonomik birimsiniz. Her ay **gelir elde eder**, **gider öder**, kalanla **tasarruf** eder ve **yatırım** kararı verirsiniz.
+- Oyun **{CFG['MONTHS']} ay** sürer.  
+- **Ay 1–{CFG['NO_INSTITUTIONS_UNTIL']}**: Finansal kurum yok → sadece **nakit** (enflasyon + kayıp riski).  
+- **Ay {CFG['NO_INSTITUTIONS_UNTIL']+1}+**: Kurumlar devrede → mevduat + hisse/kripto/metal/döviz.  
+- **Ay {CFG['CRISIS_MONTH']}**: Makro kriz.
 
-- Oyun **{CFG['MONTHS']} ay** sürer.
-- **Ay 1–{CFG['NO_INSTITUTIONS_UNTIL']}**: Finansal kurum yok → yalnızca **elde nakit** (enflasyon aşınması + kayıp riski).
-- **Ay {CFG['NO_INSTITUTIONS_UNTIL']+1}–{CFG['MONTHS']}**: Finansal kurumlar devreye girer → mevduat + piyasa araçları ile yatırım yapabilirsiniz.
-- **Ay {CFG['CRISIS_MONTH']}**: Makro kriz → risk artar, varlıklar farklı tepki verir.
-
-🎯 Amaç: Sadece “en yüksek getiri” değil, **sürdürülebilir bütçe + likidite + risk yönetimi** dengesini kurmak.
+Her ay: Gelir → gider → tasarruf → yatırım → ay sonu şokları.
             """
         )
         if st.button("✅ Okudum, başla"):
@@ -219,12 +184,10 @@ Siz bir ekonomik birimsiniz. Her ay **gelir elde eder**, **gider öder**, kalanl
             st.rerun()
         st.stop()
 
-    # Başlangıç ayarları (1 kez)
     if pl["income"] is None:
         st.subheader("1) Başlangıç Ayarları (bir kez)")
-        st.write("Aylık gelirinizi ve sabit giderinizi belirleyin.")
         income = st.number_input("Aylık Gelir (TL)", min_value=20_000, max_value=500_000, value=60_000, step=5_000)
-        fixed = st.number_input("Aylık Sabit Gider (TL) (kira/fatura vb.)", min_value=10_000, max_value=400_000, value=30_000, step=5_000)
+        fixed = st.number_input("Aylık Sabit Gider (TL)", min_value=10_000, max_value=400_000, value=30_000, step=5_000)
         if st.button("✅ Kaydet ve Oyuna Başla"):
             pl["income"] = float(income)
             pl["fixed_exp"] = float(fixed)
@@ -235,25 +198,22 @@ Siz bir ekonomik birimsiniz. Her ay **gelir elde eder**, **gider öder**, kalanl
 
     month = int(pl["month"])
     st.subheader(f"📅 Ay {month} / {CFG['MONTHS']}")
+    st.progress((month - 1) / CFG["MONTHS"])
 
-    # Haber bandı
     if month <= CFG["NO_INSTITUTIONS_UNTIL"]:
-        st.info("📰 Finansal kurum yok: Sadece elde nakit. Enflasyon aşınması + nakit taşıma riski.")
+        st.info("📰 Kurum yok: sadece nakit.")
     elif month == CFG["NO_INSTITUTIONS_UNTIL"] + 1:
-        st.success("🏦 Finansal kurumlar devrede: Mevduat + piyasa araçları açıldı.")
+        st.success("🏦 Kurumlar devrede: ürünler açıldı.")
     elif month == CFG["CRISIS_MONTH"]:
-        st.warning("🚨 Makro kriz ayı: Risk artar, varlıklar farklı tepki verir.")
+        st.warning("🚨 Makro kriz ayı.")
     else:
         st.caption("Bu ay bütçe ve yatırım kararınızı verin.")
 
-    st.progress((month - 1) / CFG["MONTHS"])
-
-    # Mevcut durum
-    st.write("### Mevcut Varlık Dağılımınız (TL)")
+    st.write("### Mevcut Varlıklarınız (TL)")
     h = pl["holdings"]
     cur_df = pd.DataFrame([{"Varlık": ASSET_LABELS[k], "Tutar (TL)": v} for k, v in h.items() if abs(v) > 1e-6])
     if cur_df.empty:
-        st.caption("Henüz varlık yok (ilk ay gelirle başlayacaksınız).")
+        st.caption("Henüz varlık yok.")
     else:
         st.dataframe(cur_df, use_container_width=True, hide_index=True)
 
@@ -261,52 +221,55 @@ Siz bir ekonomik birimsiniz. Her ay **gelir elde eder**, **gider öder**, kalanl
 
     st.divider()
     st.subheader("2) Bu Ay Bütçe Kararı")
-
     income = pl["income"]
     fixed = pl["fixed_exp"]
-    st.write(f"- Aylık geliriniz: **{income:,.0f} TL**".replace(",", "."))
-    st.write(f"- Sabit gideriniz: **{fixed:,.0f} TL**".replace(",", "."))
-
-    discretionary = st.number_input("Kendi belirlediğiniz ek harcama (TL)", min_value=0, max_value=int(income), value=5_000, step=1_000)
-    saving_rate = st.slider("Bu ay tasarruf oranı (%):", 0, 80, 20, 5)
+    st.write(f"- Gelir: **{income:,.0f} TL**".replace(",", "."))
+    st.write(f"- Sabit gider: **{fixed:,.0f} TL**".replace(",", "."))
+    discretionary = st.number_input("Ek harcama (TL)", min_value=0, max_value=int(income), value=5_000, step=1_000)
+    saving_rate = st.slider("Tasarruf oranı (%)", 0, 80, 20, 5)
 
     st.divider()
     st.subheader("3) Tasarrufu Yatırıma Dağıt (Bu ay)")
 
-    if not institutions_available(month):
-        st.caption("Kurum yok → tasarruf otomatik olarak Nakit (elde) kalır.")
-        alloc = {}  # boş
-        alloc_sum = 0
-    else:
-        st.caption("Kurumlar var → tasarrufunuzu ürünlere yüzdelik olarak dağıtın. Kalan otomatik Nakit (elde) kalır.")
-        assets = available_assets(month)
+    alloc = {}
+    alloc_sum = 0
 
-        alloc = {}
-        colA, colB = st.columns(2)
-        half = len(assets) // 2
-        with colA:
-            for k in assets[:half]:
-                alloc[k] = st.number_input(f"{ASSET_LABELS[k]} (%)", min_value=0, max_value=100, value=0, step=5)
-        with colB:
-            for k in assets[half:]:
-                alloc[k] = st.number_input(f"{ASSET_LABELS[k]} (%)", min_value=0, max_value=100, value=0, step=5)
+    if not institutions_available(month):
+        st.caption("Kurum yok → tasarruf otomatik nakitte kalır.")
+    else:
+        st.caption("Sadece sayı girin. Yan tarafta otomatik % gösterilir. Kalan otomatik Nakit (elde).")
+        assets = ["dd", "td", "eq", "cr", "pm", "fx"]
+
+        # Her satır: [etiket] [sayı] [%]
+        for k in assets:
+            c1, c2, c3 = st.columns([2.5, 1.2, 0.6])
+            with c1:
+                st.write(ASSET_LABELS[k])
+            with c2:
+                alloc[k] = st.number_input(
+                    f"{k}_pct",
+                    min_value=0,
+                    max_value=100,
+                    value=0,
+                    step=5,
+                    label_visibility="collapsed"
+                )
+            with c3:
+                st.write("%")
 
         alloc_sum = sum(alloc.values())
-        st.write(f"Dağılım toplamı (nakit hariç): **{alloc_sum}%**")
+        st.write(f"Toplam (nakit hariç): **{alloc_sum}** %")
 
         if alloc_sum < 100:
-            st.info(f"Kalan **%{100-alloc_sum:.0f}** otomatik olarak **{ASSET_LABELS['cash']}**'te kalacak.")
+            st.info(f"Kalan **{100-alloc_sum} %** otomatik olarak **{ASSET_LABELS['cash']}**'te kalacak.")
         elif alloc_sum > 100:
-            st.warning("Dağılım toplamı 100'ü aştı. Oranlar otomatik olarak 100'e ölçeklenecek (normalize).")
+            st.warning("Toplam 100'ü geçti. Oranlar otomatik olarak 100'e ölçeklenecek (normalize).")
 
-    # =========================
-    # AYI ÇALIŞTIR
-    # =========================
     if st.button("✅ Ayı Çalıştır (Bütçe + Yatırım + Şoklar)"):
-        # 1) Gelir ekle (elde nakit)
+        # 1) Gelir -> nakit
         pl["holdings"]["cash"] += float(income)
 
-        # 2) Giderleri öde (sabit + discretionary)
+        # 2) Gider ödeme
         total_exp = float(fixed) + float(discretionary)
         if pl["holdings"]["cash"] >= total_exp:
             pl["holdings"]["cash"] -= total_exp
@@ -316,7 +279,6 @@ Siz bir ekonomik birimsiniz. Her ay **gelir elde eder**, **gider öder**, kalanl
             shortage = total_exp - pl["holdings"]["cash"]
             pl["holdings"]["cash"] = 0.0
 
-            # Kurum varsa varlıklardan zorunlu satış (likit -> daha az likit)
             liquidation_order = ["dd", "fx", "pm", "eq", "cr", "td"]
             if not institutions_available(month):
                 liquidation_order = []
@@ -330,31 +292,27 @@ Siz bir ekonomik birimsiniz. Her ay **gelir elde eder**, **gider öder**, kalanl
                 take = min(avail, shortage)
                 pl["holdings"][k] -= take
                 shortage -= take
-
-                # vadeli bozma cezası
                 if k == "td":
                     pl["penalty"] += take * CFG["TD_EARLY_WITHDRAW_PENALTY"]
 
             if shortage > 0:
                 pl["penalty"] += CFG["NEG_CASHFLOW_PENALTY"]
 
-        # 3) Tasarruf hesapla (harcanmayan nakitten)
+        # 3) Tasarruf
         cash_after_exp = pl["holdings"]["cash"]
         save_amt = cash_after_exp * (saving_rate / 100.0)
         pl["holdings"]["cash"] -= save_amt
 
-        # 4) Tasarrufu portföye dağıt (otomatik düzeltme)
+        # 4) Dağıtım (otomatik kalan nakit + normalize)
         if not institutions_available(month):
-            # kurum yok: tasarruf nakitte kalır
             pl["holdings"]["cash"] += save_amt
         else:
             alloc_sum = sum(alloc.values())
 
             if alloc_sum <= 0:
-                # hiç dağıtım yapılmadı: tamamı nakit
                 pl["holdings"]["cash"] += save_amt
             else:
-                # toplam > 100 ise normalize et
+                # normalize if >100
                 if alloc_sum > 100:
                     alloc_adj = {k: (pct / alloc_sum) * 100 for k, pct in alloc.items()}
                 else:
@@ -368,14 +326,12 @@ Siz bir ekonomik birimsiniz. Her ay **gelir elde eder**, **gider öder**, kalanl
                 if remaining_pct > 0:
                     pl["holdings"]["cash"] += save_amt * (remaining_pct / 100.0)
 
-        # 5) Ay sonu getiriler + şoklar
+        # 5) Getiriler
         shocks = apply_returns(pl["holdings"], name, month)
-
-        # 6) Toplam serveti güncelle
         pl["wealth"] = total_wealth(pl["holdings"])
 
-        # 7) Logla
-        rec = {
+        # 6) Log
+        pl["log"].append({
             "Ay": month,
             "Gelir": income,
             "SabitGider": fixed,
@@ -388,48 +344,33 @@ Siz bir ekonomik birimsiniz. Her ay **gelir elde eder**, **gider öder**, kalanl
             "Kriz": (month == CFG["CRISIS_MONTH"]),
             "NakitKayıp": shocks.get("cash_loss", False),
             "NakitKayıpTutar": shocks.get("cash_loss_amt", 0.0),
-            "HisseGetiri": shocks.get("eq_r", np.nan),
-            "KriptoGetiri": shocks.get("cr_r", np.nan),
-            "MetalGetiri": shocks.get("pm_r", np.nan),
-            "DövizGetiri": shocks.get("fx_r", np.nan),
-        }
-        pl["log"].append(rec)
+        })
 
         st.success(f"Ay {month} tamamlandı. Güncel servet: {pl['wealth']:,.0f} TL".replace(",", "."))
         if not cashflow_ok:
-            st.warning("⚠️ Bu ay nakit akışı problemi yaşadınız (zorunlu satış/ceza). Bu finansın 'likidite' boyutudur.")
+            st.warning("⚠️ Nakit akışı problemi: zorunlu satış/ceza. (Likidite kavramı)")
         if month == CFG["CRISIS_MONTH"]:
-            st.info("📌 Kriz ayı: varlıkların farklı tepkileri 'risk çeşitliliğini' görünür kılar.")
+            st.info("📌 Kriz: varlıkların farklı tepkileri (risk çeşitliliği)")
 
         pl["month"] = month + 1
         st.rerun()
 
-    # Geçmiş
     if pl["log"]:
         st.divider()
         st.subheader("📒 Geçmiş (Kişisel)")
         df = pd.DataFrame(pl["log"])
-        df_show = df[["Ay","Gelir","SabitGider","EkHarcama","TasarrufTutarı","NakitAkisiOK","Kriz","Servet","CezaToplam"]].copy()
-        st.dataframe(df_show, use_container_width=True, hide_index=True)
-
+        st.dataframe(df[["Ay","Gelir","SabitGider","EkHarcama","TasarrufTutarı","NakitAkisiOK","Kriz","Servet","CezaToplam"]],
+                     use_container_width=True, hide_index=True)
         st.subheader("📈 Servet Zaman Serisi")
-        chart_df = df[["Ay","Servet"]].copy().set_index("Ay")
-        st.line_chart(chart_df)
+        st.line_chart(df[["Ay","Servet"]].set_index("Ay"))
 
 with right:
     st.subheader("🎓 Öğrenme Paneli")
-
     if "name" in locals() and name:
         pl = get_player(name)
         st.metric("Ay", f"{min(pl['month'], CFG['MONTHS']+1)} / {CFG['MONTHS']}")
         st.metric("Toplam Servet (TL)", f"{pl['wealth']:,.0f}".replace(",", "."))
         st.metric("Toplam Ceza (TL)", f"{pl['penalty']:,.0f}".replace(",", "."))
-
-        st.divider()
-        st.caption("Kurumların katkısı bu oyunda 3 kanaldan görünür:")
-        st.write("1) **Ürün çeşitliliği**: risk-getiri seçenekleri açılır.")
-        st.write("2) **Likidite yönetimi**: nakit akışı problemi olunca zorunlu satış/ceza mekanizması görünür.")
-        st.write("3) **Kriz davranışı**: farklı varlıklar farklı tepki verir (risk dağıtımı).")
 
     st.divider()
     st.subheader("🏆 Lider Tablosu")
