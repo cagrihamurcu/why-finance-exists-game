@@ -1,248 +1,305 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass
 
-st.set_page_config(page_title="Why Finance Exists? - Week 1 Game", layout="wide")
-
-# -----------------------------
-# Game parameters (Week 1)
-# -----------------------------
-@dataclass
-class Params:
-    start_cap: float = 1_000_000.0
-
-    # Direct deal
-    p_success: float = 0.70
-    r_success_mu: float = 0.35
-    r_success_sigma: float = 0.10
-
-    # "Failure" in direct deal uses recovery
-    recovery: float = 0.40
-    r_fail_sigma: float = 0.05  # around -(1-recovery)
-
-    # Deposit
-    r_deposit: float = 0.12
-
-    # Bank pooling
-    r_loan: float = 0.20
-    p_default: float = 0.20
-    n_loans: int = 50
-
-    # Game
-    n_turns: int = 5
-
-P = Params()
+st.set_page_config(page_title="Risk Havuzu Oyunu — 1. Hafta", layout="wide")
 
 # -----------------------------
-# Utilities
+# Parameters (Week 1: Why finance exists?)
 # -----------------------------
-def clamp(x, lo, hi):
-    return max(lo, min(hi, x))
+DEFAULTS = {
+    "START_CAP": 1_000_000.0,
+    "N_TURNS": 6,
 
-def draw_direct_deal_return(rng: np.random.Generator, p_success, r_success_mu, r_success_sigma, recovery, r_fail_sigma):
-    success = rng.random() < p_success
-    if success:
-        r = rng.normal(r_success_mu, r_success_sigma)
-    else:
-        r = rng.normal(-(1.0 - recovery), r_fail_sigma)
-    return r
+    # Shock process
+    "P_SHOCK": 0.20,          # probability each turn
+    "SHOCK_LOSS": 250_000.0,  # TL loss if shock happens
 
-def draw_deposit_return(_rng, r_deposit):
-    return r_deposit
+    # Pool mechanics
+    "PREMIUM": 35_000.0,      # TL paid per turn if you join the pool
+    "COVERAGE": 0.80,         # pool pays this fraction of loss
+    "POOL_INITIAL": 0.0,      # start pool balance
+    "POOL_INTEREST": 0.00,    # optional interest on pool balance per turn (keep 0 for week 1 clarity)
 
-def draw_bank_pooling_return(rng: np.random.Generator, r_loan, p_default, recovery, n_loans):
-    # Default count ~ Binomial(n_loans, p_default)
-    d = rng.binomial(n_loans, p_default)
-    # fraction defaulted
-    frac = d / max(1, n_loans)
-    # performing loans earn r_loan; defaulted loans lose (1-recovery)
-    r = (1 - frac) * r_loan + frac * (-(1.0 - recovery))
-    # add small noise so VaR is meaningful
-    r += rng.normal(0.0, 0.01)
-    return r
-
-def var5(returns):
-    if len(returns) == 0:
-        return 0.0
-    return float(np.percentile(np.array(returns), 5))
+    # Scoring
+    "LOSS_TURN_PENALTY": 120_000.0,  # TL penalty per loss turn (keeps luck from dominating)
+}
 
 # -----------------------------
-# Persistent storage in session
+# Session state init
 # -----------------------------
-if "rng_seed" not in st.session_state:
-    st.session_state.rng_seed = 20260207  # fixed seed -> same macro world for everyone (fairness)
-
 if "players" not in st.session_state:
-    st.session_state.players = {}  # name -> state dict
+    st.session_state.players = {}  # name -> dict
+
+if "world_seed" not in st.session_state:
+    st.session_state.world_seed = 20260208  # fixed seed for reproducibility
+
+if "pool_balance" not in st.session_state:
+    st.session_state.pool_balance = DEFAULTS["POOL_INITIAL"]
+
+if "current_turn" not in st.session_state:
+    st.session_state.current_turn = 1
+
+if "turn_resolved" not in st.session_state:
+    st.session_state.turn_resolved = False  # prevent double-resolve
 
 def get_player(name: str):
     if name not in st.session_state.players:
         st.session_state.players[name] = {
-            "turn": 1,
-            "wealth": P.start_cap,
-            "returns": [],
-            "loss_turns": 0,
-            "log": []
+            "wealth": DEFAULTS["START_CAP"],
+            "joined": [],         # join decision each turn (bool)
+            "shocks": [],         # shock occurred (bool)
+            "net_change": [],     # TL net change each turn
+            "log": []             # per-turn record
         }
     return st.session_state.players[name]
 
+def score(player):
+    loss_turns = sum(1 for x in player["net_change"] if x < 0)
+    return player["wealth"] - DEFAULTS["LOSS_TURN_PENALTY"] * loss_turns
+
+def var5_tl(player):
+    # VaR on TL net changes (negative tail). Report 5th percentile of net change.
+    if len(player["net_change"]) == 0:
+        return 0.0
+    return float(np.percentile(np.array(player["net_change"]), 5))
+
 # -----------------------------
-# Sidebar: Instructor controls (optional)
+# Sidebar: Instructor controls
 # -----------------------------
 with st.sidebar:
-    st.header("🎛️ Eğitmen Paneli (opsiyonel)")
-    st.caption("Sınıfta adil olması için aynı makro dünyayı kullanıyoruz.")
-    seed = st.number_input("Makro dünya seed", value=int(st.session_state.rng_seed), step=1)
+    st.header("🎛️ Eğitmen Paneli")
+    st.caption("1. hafta için: risk havuzunun (aracılığın) değerini 'hissettirme' amaçlıdır.")
+
+    seed = st.number_input("Dünya Seed", value=int(st.session_state.world_seed), step=1)
     if st.button("Seed uygula"):
-        st.session_state.rng_seed = int(seed)
-        st.success("Seed güncellendi. Yeni dünyada sonuçlar değişir.")
-    st.divider()
-
-    st.subheader("Makro Şok Ayarları")
-    st.caption("Tur 4'te pDefault otomatik artar. İsterseniz burada ayarlayın.")
-    shock_pdefault = st.slider("Tur 4 pDefault", 0.05, 0.80, 0.35, 0.01)
-    st.session_state.shock_pdefault = shock_pdefault
+        st.session_state.world_seed = int(seed)
+        st.success("Seed güncellendi. Yeni şok dizisi oluşur (gelecek turlar için).")
 
     st.divider()
-    if st.button("🧹 Tüm oyunu sıfırla (dikkat)"):
+    st.subheader("Oyun Parametreleri (isteğe bağlı)")
+    START_CAP = st.number_input("START_CAP", value=float(DEFAULTS["START_CAP"]), step=50_000.0)
+    N_TURNS = st.number_input("N_TURNS", value=int(DEFAULTS["N_TURNS"]), step=1, min_value=3, max_value=12)
+    P_SHOCK = st.slider("P_SHOCK", 0.05, 0.60, float(DEFAULTS["P_SHOCK"]), 0.01)
+    SHOCK_LOSS = st.number_input("SHOCK_LOSS (TL)", value=float(DEFAULTS["SHOCK_LOSS"]), step=25_000.0)
+    PREMIUM = st.number_input("PREMIUM (TL)", value=float(DEFAULTS["PREMIUM"]), step=5_000.0)
+    COVERAGE = st.slider("COVERAGE", 0.10, 1.00, float(DEFAULTS["COVERAGE"]), 0.05)
+    POOL_INTEREST = st.slider("POOL_INTEREST (turn)", 0.00, 0.05, float(DEFAULTS["POOL_INTEREST"]), 0.005)
+    LOSS_TURN_PENALTY = st.number_input("LOSS_TURN_PENALTY", value=float(DEFAULTS["LOSS_TURN_PENALTY"]), step=10_000.0)
+
+    st.caption("Not: Parametreleri derste değiştirmeyin; önceden belirleyip sabitlemek daha iyi.")
+
+    st.divider()
+    if st.button("🧹 Oyunu Sıfırla (Tüm Oyuncular + Havuz)"):
         st.session_state.players = {}
-        st.success("Sıfırlandı.")
+        st.session_state.pool_balance = DEFAULTS["POOL_INITIAL"]
+        st.session_state.current_turn = 1
+        st.session_state.turn_resolved = False
+        st.success("Oyun sıfırlandı.")
+
+# Apply live params (kept in local variables)
+PARAM = {
+    "START_CAP": START_CAP,
+    "N_TURNS": int(N_TURNS),
+    "P_SHOCK": float(P_SHOCK),
+    "SHOCK_LOSS": float(SHOCK_LOSS),
+    "PREMIUM": float(PREMIUM),
+    "COVERAGE": float(COVERAGE),
+    "POOL_INTEREST": float(POOL_INTEREST),
+    "LOSS_TURN_PENALTY": float(LOSS_TURN_PENALTY),
+}
 
 # -----------------------------
-# Main UI
+# Header
 # -----------------------------
-st.title("🎮 Why Finance Exists? — 1. Hafta Oyunu")
-st.write("5 tur boyunca seçim yapın. Amaç: **finansın neden var olduğunu yaşamak**.")
+st.title("🎮 Risk Havuzu Oyunu — 1. Hafta (Finans Neden Var?)")
+st.write(
+    "Her tur bir seçim yapacaksınız: **Havuza gir** (prim öde) veya **Tek başına kal**.\n\n"
+    "Şok gelirse tek başına kalanlar zararı tamamen taşır; havuzdakiler zararın bir kısmını havuzdan alır.\n\n"
+    "Ama havuzun da bir bütçesi var: **havuz bakiyesi** sınıfın ortak riski taşıma kapasitesini gösterir."
+)
 
-colA, colB = st.columns([2, 1])
+# -----------------------------
+# Main layout
+# -----------------------------
+left, right = st.columns([2.2, 1])
 
-with colA:
-    name = st.text_input("Oyuncu Adı (takma isim):", placeholder="örn. Takım-3 / Ayşe / Mehmet")
+with left:
+    name = st.text_input("Oyuncu Adı (takma isim):", placeholder="örn. T2_Ayşe / Mehmet / Takım-4")
     if not name:
         st.info("Başlamak için bir oyuncu adı girin.")
         st.stop()
 
     player = get_player(name)
-    turn = player["turn"]
 
-    # Macro regime by turn
-    p_default_turn = P.p_default
-    note = ""
-    if turn == 4:
-        p_default_turn = float(st.session_state.get("shock_pdefault", 0.35))
-        note = f"⚠️ Makro Şok: pDefault = {p_default_turn:.2f}"
-    elif turn in [1, 2]:
-        note = "🌍 'Finans yok' dünyası: çoğu kişi tek yatırıma koşar."
-    elif turn == 3:
-        note = "🏦 Bank_Pooling açıldı: risk havuzu artık mümkün."
+    # sync start cap if user changed param mid-session
+    if len(player["log"]) == 0 and player["wealth"] != PARAM["START_CAP"]:
+        player["wealth"] = PARAM["START_CAP"]
 
-    st.subheader(f"Tur: {turn} / {P.n_turns}")
-    if note:
-        st.warning(note)
+    turn = st.session_state.current_turn
+    st.subheader(f"Tur: {turn} / {PARAM['N_TURNS']}")
 
     st.metric("Mevcut Servet (TL)", f"{player['wealth']:,.0f}".replace(",", "."))
+    st.metric("Havuz Bakiyesi (TL)", f"{st.session_state.pool_balance:,.0f}".replace(",", "."))
 
-    st.write("### Seçimini yap")
-    choices = ["Direct_Deal", "Deposit", "Bank_Pooling"]
-    # optional: force direct deal first 2 turns
-    forced = (turn in [1, 2])
-    if forced:
-        st.info("Bu turda sadece **Direct_Deal** seçilebilir (Finans yok).")
-        choice = "Direct_Deal"
-        st.write("Seçim: **Direct_Deal**")
-    else:
-        choice = st.radio("Seçenek", choices, horizontal=True)
+    st.write("### Seçim")
+    join_pool = st.radio(
+        "Bu tur havuza girecek misiniz?",
+        options=["Havuza gir (prim öde)", "Tek başıma kal"],
+        horizontal=True
+    ) == "Havuza gir (prim öde)"
 
-    if st.button("✅ Kararı Onayla ve Sonucu Gör"):
-        rng = np.random.default_rng(st.session_state.rng_seed + hash((name, turn)) % 10_000_000)
+    st.caption(
+        f"Prim: {PARAM['PREMIUM']:,.0f} TL | Şok olursa zarar: {PARAM['SHOCK_LOSS']:,.0f} TL | "
+        f"Havuz kapsamı: %{int(PARAM['COVERAGE']*100)}".replace(",", ".")
+    )
 
-        if choice == "Direct_Deal":
-            r = draw_direct_deal_return(
-                rng,
-                P.p_success,
-                P.r_success_mu,
-                P.r_success_sigma,
-                P.recovery,
-                P.r_fail_sigma
-            )
-        elif choice == "Deposit":
-            r = draw_deposit_return(rng, P.r_deposit)
+    # Submit decision (stored, turn resolved centrally)
+    if st.button("✅ Kararı Kaydet"):
+        # Ensure player hasn't already submitted for this turn
+        already = any(rec["Turn"] == turn for rec in player["log"])
+        if already:
+            st.warning("Bu tur için kararınız zaten kaydedilmiş.")
         else:
-            r = draw_bank_pooling_return(
-                rng,
-                P.r_loan,
-                p_default_turn,
-                P.recovery,
-                P.n_loans
-            )
+            player["joined"].append(bool(join_pool))
+            player["log"].append({
+                "Turn": turn,
+                "Decision": "JOIN" if join_pool else "SOLO",
+                "Shock": None,
+                "PremiumPaid": 0.0,
+                "Compensation": 0.0,
+                "NetChange": 0.0,
+                "Wealth": player["wealth"],
+                "PoolBalance": st.session_state.pool_balance
+            })
+            st.success("Karar kaydedildi. (Tur sonuçları 'Tur Sonuçlarını Çalıştır' ile açıklanacak.)")
 
-        # Update wealth
-        new_wealth = player["wealth"] * (1.0 + r)
+    st.divider()
 
-        player["returns"].append(float(r))
-        if r < 0:
-            player["loss_turns"] += 1
+    # Instructor-like "Run turn" button visible to all (works well in lab if you ask everyone not to press)
+    # If you prefer: only instructor presses on projected PC.
+    st.write("### 🧪 Tur Sonuçlarını Çalıştır (sınıfça aynı anda)")
+    st.caption("Öneri: Bu butona sadece öğretim elemanı bassın (projeksiyondaki bilgisayardan).")
 
-        player["wealth"] = new_wealth
-        player["log"].append({
-            "Turn": turn,
-            "Choice": choice,
-            "Return": r,
-            "Wealth": new_wealth,
-            "pDefault": p_default_turn
-        })
+    if st.button("🎲 TURU ÇALIŞTIR"):
+        if st.session_state.turn_resolved:
+            st.warning("Bu tur zaten çalıştırıldı. Yeni tur için 'Yeni Tura Geç' kullanın.")
+        else:
+            # apply pool interest
+            st.session_state.pool_balance *= (1.0 + PARAM["POOL_INTEREST"])
 
-        player["turn"] += 1
+            # resolve shocks for all players who submitted decision for this turn
+            rng = np.random.default_rng(st.session_state.world_seed + turn * 10_000)
 
-        st.success(f"Sonuç: Getiri = {r*100:.2f}% | Yeni Servet = {new_wealth:,.0f} TL".replace(",", "."))
+            for pname, pl in st.session_state.players.items():
+                # find turn record
+                recs = [r for r in pl["log"] if r["Turn"] == turn]
+                if not recs:
+                    continue  # no decision submitted
+                rec = recs[0]
+                # decide shock
+                shock = rng.random() < PARAM["P_SHOCK"]
+                loss = PARAM["SHOCK_LOSS"] if shock else 0.0
 
-        if player["turn"] > P.n_turns:
-            st.balloons()
+                # premium if joined
+                joined = (rec["Decision"] == "JOIN")
+                premium_paid = PARAM["PREMIUM"] if joined else 0.0
 
-    # Player log
+                # update pool with premium
+                st.session_state.pool_balance += premium_paid
+
+                # compensation if shock and joined
+                comp = 0.0
+                if shock and joined:
+                    desired = PARAM["COVERAGE"] * loss
+                    # pay as much as pool allows (pool can run low -> important lesson)
+                    pay = min(desired, st.session_state.pool_balance)
+                    comp = pay
+                    st.session_state.pool_balance -= pay
+
+                # net change
+                net = -premium_paid - loss + comp
+
+                pl["wealth"] += net
+                pl["shocks"].append(bool(shock))
+                pl["net_change"].append(float(net))
+
+                # update record
+                rec["Shock"] = shock
+                rec["PremiumPaid"] = float(premium_paid)
+                rec["Compensation"] = float(comp)
+                rec["NetChange"] = float(net)
+                rec["Wealth"] = float(pl["wealth"])
+                rec["PoolBalance"] = float(st.session_state.pool_balance)
+
+            st.session_state.turn_resolved = True
+            st.success("Tur çalıştırıldı. Sonuçları aşağıdaki tablolardan inceleyin.")
+
+    if st.button("➡️ Yeni Tura Geç"):
+        if not st.session_state.turn_resolved:
+            st.warning("Önce tur sonuçlarını çalıştırın.")
+        else:
+            if st.session_state.current_turn >= PARAM["N_TURNS"]:
+                st.info("Oyun bitti. Lider tablosuna bakın.")
+            else:
+                st.session_state.current_turn += 1
+                st.session_state.turn_resolved = False
+                st.success("Yeni tura geçildi.")
+
+    # Show player's log
     if player["log"]:
-        st.write("### Tur Geçmişi")
-        df_log = pd.DataFrame(player["log"])
-        df_log["Return %"] = df_log["Return"] * 100
-        df_log["Wealth (TL)"] = df_log["Wealth"]
-        df_log = df_log[["Turn", "Choice", "Return %", "Wealth (TL)", "pDefault"]]
-        st.dataframe(df_log, use_container_width=True)
+        st.write("### Tur Geçmişi (Kişisel)")
+        df = pd.DataFrame(player["log"])
+        df_disp = df[["Turn", "Decision", "Shock", "PremiumPaid", "Compensation", "NetChange", "Wealth"]].copy()
+        st.dataframe(df_disp, use_container_width=True, hide_index=True)
 
-with colB:
-    st.subheader("📈 Kişisel Risk Özeti")
-    rets = player["returns"]
-    loss_turns = player["loss_turns"]
-    v5 = var5(rets)
+with right:
+    st.subheader("📌 Kişisel Risk Özeti")
+    loss_turns = sum(1 for x in player["net_change"] if x < 0)
     st.metric("Zarar Yaşanan Tur", str(loss_turns))
-    st.metric("VaR %5 (Getiri)", f"{v5*100:.2f}%")
-    if len(rets) > 1:
-        st.metric("Ortalama Getiri", f"{np.mean(rets)*100:.2f}%")
-        st.metric("Std. Sapma", f"{np.std(rets, ddof=1)*100:.2f}%")
-    else:
-        st.caption("En az 2 tur oynayınca ortalama/std görünür.")
+    st.metric("VaR %5 (Net Değişim, TL)", f"{var5_tl(player):,.0f}".replace(",", "."))
+    st.metric("Skor", f"{score(player):,.0f}".replace(",", "."))
 
-    # Score
-    score = player["wealth"] - 150_000 * loss_turns
-    st.metric("Skor", f"{score:,.0f}".replace(",", "."))
+    st.divider()
+    st.subheader("🏦 Havuz İstatistikleri (Sınıf)")
+    # class summary for current turn
+    total_players = len(st.session_state.players)
+    joined_count = 0
+    submitted_count = 0
+    for pname, pl in st.session_state.players.items():
+        if any(r["Turn"] == st.session_state.current_turn for r in pl["log"]):
+            submitted_count += 1
+            rec = [r for r in pl["log"] if r["Turn"] == st.session_state.current_turn][0]
+            if rec["Decision"] == "JOIN":
+                joined_count += 1
+
+    st.metric("Toplam Oyuncu", str(total_players))
+    st.metric("Bu Tur Karar Veren", str(submitted_count))
+    st.metric("Bu Tur Havuza Giren", str(joined_count))
+    st.metric("Havuz Bakiyesi (TL)", f"{st.session_state.pool_balance:,.0f}".replace(",", "."))
 
     st.divider()
     st.subheader("🏆 Lider Tablosu")
     rows = []
-    for n, pl in st.session_state.players.items():
-        sc = pl["wealth"] - 150_000 * pl["loss_turns"]
+    for pname, pl in st.session_state.players.items():
         rows.append({
-            "Oyuncu": n,
-            "Tur": min(pl["turn"]-1, P.n_turns),
-            "Final Servet (TL)": pl["wealth"],
-            "Zarar Tur": pl["loss_turns"],
-            "VaR %5": var5(pl["returns"]),
-            "Skor": sc
+            "Oyuncu": pname,
+            "Tur": len(pl["net_change"]),
+            "Servet (TL)": pl["wealth"],
+            "Zarar Tur": sum(1 for x in pl["net_change"] if x < 0),
+            "VaR%5 (TL)": var5_tl(pl),
+            "Skor": score(pl),
         })
     if rows:
         lb = pd.DataFrame(rows).sort_values("Skor", ascending=False)
-        lb["Final Servet (TL)"] = lb["Final Servet (TL)"].round(0)
-        lb["VaR %5"] = (lb["VaR %5"]*100).round(2).astype(str) + "%"
+        # pretty formatting
+        lb["Servet (TL)"] = lb["Servet (TL)"].round(0)
+        lb["VaR%5 (TL)"] = lb["VaR%5 (TL)"].round(0)
+        lb["Skor"] = lb["Skor"].round(0)
         st.dataframe(lb, use_container_width=True, hide_index=True)
     else:
         st.caption("Henüz oyuncu yok.")
+
+    st.divider()
+    st.subheader("💡 Ders Mesajı (1 cümle)")
+    st.write("Finans = **riskin havuzlanması ve paylaşılması**. Tek başına kalan, aynı şoka daha kırılgan olur.")
