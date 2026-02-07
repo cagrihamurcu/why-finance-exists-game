@@ -249,7 +249,7 @@ if p.get("finished", False):
 
         cols = [
             "Ay", "Aşama",
-            "Tasarruf(TL)", "YatırımaGiden(TL)", "BorçÖdeme(TL)",
+            "Tasarruf(TL)", "YatırımaGiden(TL)", "BorçÖdeme(TL)", "EnflasyonKaybı(TL)",
             "DönemSonuNakit(TL)", "DönemSonuYatırım(TL)", "DönemSonuBorç(TL)",
             "ToplamServet(TL)"
         ]
@@ -402,14 +402,14 @@ btn_label = "✅ Ayı Tamamla" if month < CFG["MONTHS"] else "✅ 12. Ayı Tamam
 if st.button(btn_label):
     rng = rng_for(name, month)
 
-    # Her durumda tanımlı olsun:
     invested_amount = 0.0
     repay_amt = 0.0
+    inflation_loss = 0.0
 
     # 0) Gelir ekle
     p["holdings"]["cash"] += income
 
-    # 1) Giderleri öde (nakit yetmezse borç/temerrüt)
+    # 1) Giderleri öde
     p["holdings"]["cash"] -= total_exp
 
     if p["holdings"]["cash"] < 0:
@@ -431,6 +431,7 @@ if st.button(btn_label):
                 "Tasarruf(TL)": float(saving),
                 "YatırımaGiden(TL)": 0.0,
                 "BorçÖdeme(TL)": 0.0,
+                "EnflasyonKaybı(TL)": 0.0,
                 "DönemSonuNakit(TL)": end_cash,
                 "DönemSonuYatırım(TL)": end_invest,
                 "DönemSonuBorç(TL)": end_debt,
@@ -438,7 +439,7 @@ if st.button(btn_label):
             })
             st.rerun()
         else:
-            # Banka var: otomatik borç
+            # banka: otomatik borç
             p["debt"] += deficit
             p["holdings"]["cash"] = 0.0
 
@@ -457,7 +458,6 @@ if st.button(btn_label):
             p["holdings"][k] += invest_amt
             p["holdings"]["cash"] -= invest_amt
 
-        # Yatırım nakdi negatife ittiyse: banka varsa borçlan
         if p["holdings"]["cash"] < 0:
             deficit2 = -float(p["holdings"]["cash"])
             if can_borrow(month):
@@ -508,8 +508,10 @@ if st.button(btn_label):
     if can_borrow(month) and float(p["debt"]) > 0:
         p["debt"] *= (1.0 + float(CFG["LOAN_RATE"]))
 
-    # 6) Enflasyon: nakit aşınması
-    p["holdings"]["cash"] *= (1.0 - float(CFG["INFLATION_M"]))
+    # 6) Enflasyon: nakit aşınması (KAYBI HESAPLA)
+    infl_rate = float(CFG["INFLATION_M"])
+    inflation_loss = float(p["holdings"]["cash"]) * infl_rate
+    p["holdings"]["cash"] *= (1.0 - infl_rate)
 
     # 7) Borç geri ödeme (ay sonu)
     if can_borrow(month) and float(p["debt"]) > 0 and repay_pct > 0:
@@ -533,6 +535,7 @@ if st.button(btn_label):
         "Tasarruf(TL)": float(saving),
         "YatırımaGiden(TL)": float(invested_amount),
         "BorçÖdeme(TL)": float(repay_amt),
+        "EnflasyonKaybı(TL)": float(inflation_loss),
         "DönemSonuNakit(TL)": end_cash,
         "DönemSonuYatırım(TL)": end_invest,
         "DönemSonuBorç(TL)": end_debt,
@@ -557,7 +560,7 @@ if p["log"]:
     df = pd.DataFrame(p["log"]).copy()
     cols = [
         "Ay", "Aşama",
-        "Tasarruf(TL)", "YatırımaGiden(TL)", "BorçÖdeme(TL)",
+        "Tasarruf(TL)", "YatırımaGiden(TL)", "BorçÖdeme(TL)", "EnflasyonKaybı(TL)",
         "DönemSonuNakit(TL)", "DönemSonuYatırım(TL)", "DönemSonuBorç(TL)",
         "ToplamServet(TL)"
     ]
