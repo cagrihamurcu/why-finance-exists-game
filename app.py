@@ -285,7 +285,6 @@ def get_player(name: str) -> dict:
             theft_rng.choice(np.arange(1, CFG["MONTHS"] + 1), size=3, replace=False).tolist()
         )
 
-        # ✅ Başlangıç PGL: %1–%5 random
         pgl0 = float(np.random.default_rng((hash(name) % 10000) + st.session_state.seed + 777).uniform(
             CFG["PGL_FLOOR"], CFG["PGL_CAP"]
         ))
@@ -316,7 +315,7 @@ def get_player(name: str) -> dict:
     return st.session_state.players[name]
 
 # =========================
-# SIDEBAR (KISA BİLGİ PANELİ)
+# SIDEBAR
 # =========================
 with st.sidebar:
     st.header("ℹ️ Oyun Bilgisi")
@@ -324,7 +323,7 @@ with st.sidebar:
         "- **Gelir sabittir.**\n"
         "- **Fiyatlar Genel Düzeyi** her ay bir **değişim** (artış/azalış) gösterir.\n"
         "- **Sabit giderler**, bu değişime göre **bir sonraki ay** artar ya da azalır.\n"
-        "- **4. aydan itibaren** finansal kurumlar (bankalar vb.) devreye girer ve seçenekler genişler."
+        "- **4. aydan itibaren** finansal kurumlar devreye girer."
     )
     st.divider()
     if st.button("🧹 Oyunu Sıfırla"):
@@ -334,21 +333,18 @@ with st.sidebar:
 st.title("🎮 1. Hafta Oyunu: Neden Finansal Piyasalar ve Kurumlarla İlgileniyoruz?")
 
 # =========================
-# POP-UP CSS
+# POP-UP RENDER
 # =========================
 def _overlay_style():
     st.markdown(
         """
         <style>
         .ovl {
-            position: fixed;
-            top: 0; left: 0;
+            position: fixed; top: 0; left: 0;
             width: 100vw; height: 100vh;
             background: rgba(0,0,0,0.35);
             z-index: 9999;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+            display: flex; align-items: center; justify-content: center;
             padding: 18px;
         }
         .card {
@@ -371,7 +367,6 @@ def render_theft_modal():
     pop = st.session_state.get("theft_popup")
     if not pop:
         return
-
     loss = float(pop.get("loss", 0.0))
     remain = float(pop.get("remain", 0.0))
     m = int(pop.get("month", 0))
@@ -425,7 +420,7 @@ def render_pgl_modal():
     to_month = int(pop.get("to_month", 0))
     pgl_prev = float(pop.get("pgl_prev", 0.0))
     pgl_new = float(pop.get("pgl_new", 0.0))
-    step_used = float(pop.get("step_used", 0.0))  # realized delta (signed)
+    step_used = float(pop.get("step_used", 0.0))
     fixed_prev = float(pop.get("fixed_prev", 0.0))
     fixed_new = float(pop.get("fixed_new", 0.0))
 
@@ -438,7 +433,6 @@ def render_pgl_modal():
     else:
         msg = "Band sınırına çarptığı için bu ay adım **0** olarak gerçekleşti."
         arrow = "➡️"
-
     step_text = f"{arrow} {fmt_pct(abs(step_used))}"
 
     if hasattr(st, "dialog"):
@@ -492,7 +486,6 @@ p = get_player(name)
 month = int(p["month"])
 opened = open_assets_by_month(month)
 
-# pop-up'ları üstte render et
 render_theft_modal()
 render_pgl_modal()
 
@@ -505,7 +498,6 @@ if p.get("finished", False):
         st.error("⛔ Oyun bitti: Ay 1–3 döneminde açık oluştu (borç yok) → temerrüt.")
     else:
         st.success("✅ Oyun bitti: 12. ay tamamlandı.")
-
     a1, a2, a3, a4 = st.columns(4)
     a1.metric("Nakit", fmt_tl(p["holdings"]["cash"]))
     a2.metric("Yatırım (Toplam)", fmt_tl(total_investments(p)))
@@ -535,60 +527,16 @@ r2b.metric("Bu Ay Sabit Gider", fmt_tl(fixed_this_month))
 r2c.metric("Gelir (Sabit)", fmt_tl(income))
 r2d.metric("Borç Mekanizması", "Açık (Banka)" if can_borrow(month) else "Kapalı (Ay1-3)")
 
-# ✅ Sekmeler: Oyun Özeti eklendi
-tab_summary, tab_game, tab_banks, tab_log = st.tabs(
-    ["📌 Oyun Özeti", "🎯 Karar Ekranı", "🏦 Bankalar & Mevduat", "📒 Geçmiş"]
+# ✅ Oyun Özeti SONA alındı
+tab_game, tab_banks, tab_log, tab_summary = st.tabs(
+    ["🎯 Karar Ekranı", "🏦 Bankalar & Mevduat", "📒 Geçmiş", "📌 Oyun Özeti"]
 )
-
-# -------------------------------------------------
-# OYUN ÖZETİ + NET SERVET GRAFİĞİ
-# -------------------------------------------------
-with tab_summary:
-    st.subheader("📌 Oyun Özeti")
-    st.write(
-        "Bu sayfada, oyunun temel mantığını hatırlayıp **toplam servetin (net)** aylar içindeki değişimini görebilirsiniz."
-    )
-
-    # Net servet serisi: log varsa logdan; yoksa şu anki durumu tek nokta olarak göster
-    if p["log"]:
-        df = pd.DataFrame(p["log"]).copy()
-        # güvenli kolon adı
-        if "ToplamServet(TL)" in df.columns:
-            df_plot = df[["Ay", "ToplamServet(TL)"]].sort_values("Ay")
-            df_plot = df_plot.rename(columns={"ToplamServet(TL)": "Toplam Servet (Net) - TL"})
-        else:
-            df_plot = df[["Ay"]].sort_values("Ay")
-            df_plot["Toplam Servet (Net) - TL"] = np.nan
-
-        # metrik: başlangıç ve son
-        first_val = float(df_plot["Toplam Servet (Net) - TL"].iloc[0])
-        last_val = float(df_plot["Toplam Servet (Net) - TL"].iloc[-1])
-        delta = last_val - first_val
-
-        cA, cB, cC = st.columns(3)
-        cA.metric("Başlangıç (İlk kayıt)", fmt_tl(first_val))
-        cB.metric("Son (En güncel kayıt)", fmt_tl(last_val), delta=fmt_tl(delta))
-        cC.metric("Kayıtlı Ay Sayısı", str(int(df_plot.shape[0])))
-
-        st.markdown("#### 📈 Toplam Servet (Net) Zaman Serisi")
-        st.line_chart(df_plot.set_index("Ay")["Toplam Servet (Net) - TL"])
-
-        with st.expander("📋 Özet Tablo (Ay - Toplam Servet)", expanded=False):
-            st.dataframe(df_plot, use_container_width=True, hide_index=True, height=260)
-
-    else:
-        # henüz kayıt yok: tek nokta
-        current_net = float(net_wealth(p))
-        st.info("Henüz geçmiş kaydı yok. İlk ayı tamamlayınca grafik oluşacak.")
-        df_plot = pd.DataFrame({"Ay": [0], "Toplam Servet (Net) - TL": [current_net]})
-        st.line_chart(df_plot.set_index("Ay")["Toplam Servet (Net) - TL"])
 
 # -------------------------------------------------
 # BANKALAR & MEVDUAT
 # -------------------------------------------------
 with tab_banks:
     st.subheader("🏦 Bankalar ve Mevduat Dökümü")
-
     if month < 4:
         st.info("Ay 1–3: Bankalar yok.")
     else:
@@ -656,6 +604,37 @@ with tab_log:
 
                 render_kv(left_items, cols[0])
                 render_kv(right_items, cols[1])
+
+# -------------------------------------------------
+# OYUN ÖZETİ (SON TAB)
+# -------------------------------------------------
+with tab_summary:
+    st.subheader("📌 Oyun Özeti")
+    st.write("Toplam servetin (net) aylar içindeki değişimi:")
+
+    if p["log"]:
+        df = pd.DataFrame(p["log"]).copy()
+        df_plot = df[["Ay", "ToplamServet(TL)"]].sort_values("Ay")
+        df_plot = df_plot.rename(columns={"ToplamServet(TL)": "Toplam Servet (Net) - TL"})
+
+        first_val = float(df_plot["Toplam Servet (Net) - TL"].iloc[0])
+        last_val = float(df_plot["Toplam Servet (Net) - TL"].iloc[-1])
+        delta = last_val - first_val
+
+        cA, cB, cC = st.columns(3)
+        cA.metric("Başlangıç (İlk kayıt)", fmt_tl(first_val))
+        cB.metric("Son (En güncel kayıt)", fmt_tl(last_val), delta=fmt_tl(delta))
+        cC.metric("Kayıtlı Ay Sayısı", str(int(df_plot.shape[0])))
+
+        st.line_chart(df_plot.set_index("Ay")["Toplam Servet (Net) - TL"])
+
+        with st.expander("📋 Özet Tablo", expanded=False):
+            st.dataframe(df_plot, use_container_width=True, hide_index=True, height=260)
+    else:
+        st.info("Henüz geçmiş kaydı yok. İlk ayı tamamlayınca grafik oluşacak.")
+        current_net = float(net_wealth(p))
+        df_plot = pd.DataFrame({"Ay": [0], "Toplam Servet (Net) - TL": [current_net]})
+        st.line_chart(df_plot.set_index("Ay")["Toplam Servet (Net) - TL"])
 
 # -------------------------------------------------
 # KARAR EKRANI
@@ -813,12 +792,7 @@ with tab_game:
             sev = float(rng.uniform(CFG["CASH_THEFT_SEV_MIN"], CFG["CASH_THEFT_SEV_MAX"]))
             theft_loss = float(p["holdings"]["cash"]) * sev
             p["holdings"]["cash"] -= theft_loss
-            st.session_state.theft_popup = {
-                "loss": float(theft_loss),
-                "remain": float(p["holdings"]["cash"]),
-                "month": int(month),
-                "player": str(name),
-            }
+            st.session_state.theft_popup = {"loss": float(theft_loss), "remain": float(p["holdings"]["cash"]), "month": int(month), "player": str(name)}
 
         # G) VADELİ FAİZ
         if month >= 4 and bank_map_local:
@@ -836,19 +810,16 @@ with tab_game:
             if month == CFG["CRISIS_MONTH"]:
                 eq_r += CFG["CRISIS_EQ"]
             p["holdings"]["eq"] *= (1.0 + eq_r)
-
         if "cr" in opened:
             cr_r = float(rng.normal(CFG["CR_MU"], CFG["CR_SIG"]))
             if month == CFG["CRISIS_MONTH"]:
                 cr_r += CFG["CRISIS_CR"]
             p["holdings"]["cr"] *= (1.0 + cr_r)
-
         if "pm" in opened:
             pm_r = float(rng.normal(CFG["PM_MU"], CFG["PM_SIG"]))
             if month == CFG["CRISIS_MONTH"]:
                 pm_r += CFG["CRISIS_PM"]
             p["holdings"]["pm"] *= (1.0 + pm_r)
-
         if "fx" in opened:
             fx_r = float(rng.normal(CFG["FX_MU"], CFG["FX_SIG"]))
             if month == CFG["CRISIS_MONTH"]:
@@ -861,56 +832,32 @@ with tab_game:
 
         # J) LOG
         end_cash = float(p["holdings"]["cash"])
-        end_inv = float(dd_total(p) + td_total(p) + other_investments_total(p))
+        end_inv = float(total_investments(p))
         end_debt = float(p["debt"])
         end_total = float(end_cash + end_inv - end_debt)
 
-        p["log"].append({
-            "Ay": month,
-            "Aşama": stage_label(month),
-            "FiyatlarGenelDuzeyi": float(pgl),
-            "Gelir(TL)": float(income),
-            "SabitGider(TL)": float(fixed_this_month),
-            "EkHarcama(TL)": float(extra),
-            "YeniBorç(TL)": float(new_borrow_taken),
-            "İşlemÜcreti(TL)": float(tx_fee_total),
-            "SpreadMaliyeti(TL)": float(spread_cost_total),
-            "VadeliBozmaCezası(TL)": float(early_break_penalty_total),
-            "VadeliFaizGeliri(TL)": float(td_interest),
-            "NakitHırsızlıkKayıp(TL)": float(theft_loss),
-            "DönemSonuNakit(TL)": float(end_cash),
-            "DönemSonuYatırım(TL)": float(end_inv),
-            "DönemSonuBorç(TL)": float(end_debt),
-            "ToplamServet(TL)": float(end_total),
-        })
+        p["log"].append({"Ay": month, "Aşama": stage_label(month), "FiyatlarGenelDuzeyi": float(pgl),
+                         "Gelir(TL)": float(income), "SabitGider(TL)": float(fixed_this_month),
+                         "EkHarcama(TL)": float(extra), "YeniBorç(TL)": float(new_borrow_taken),
+                         "İşlemÜcreti(TL)": float(tx_fee_total), "SpreadMaliyeti(TL)": float(spread_cost_total),
+                         "VadeliBozmaCezası(TL)": float(early_break_penalty_total),
+                         "VadeliFaizGeliri(TL)": float(td_interest), "NakitHırsızlıkKayıp(TL)": float(theft_loss),
+                         "DönemSonuNakit(TL)": float(end_cash), "DönemSonuYatırım(TL)": float(end_inv),
+                         "DönemSonuBorç(TL)": float(end_debt), "ToplamServet(TL)": float(end_total)})
 
-        # K) ✅ PGL GÜNCELLE + SABİT GİDERİ
+        # K) PGL GÜNCELLE
         if month < CFG["MONTHS"]:
             next_rng = rng_for_player(name, month + 1)
-
             pgl_prev = float(p["pgl_current"])
             fixed_prev = float(p["fixed_current"])
-
             pgl_next, realized_delta = next_pgl(pgl_prev, next_rng)
-
-            fixed_next = float(fixed_prev * (1.0 + realized_delta))
-            fixed_next = float(max(0.0, fixed_next))
-
+            fixed_next = float(max(0.0, fixed_prev * (1.0 + realized_delta)))
             p["pgl_current"] = float(pgl_next)
             p["fixed_current"] = float(fixed_next)
+            st.session_state.pgl_popup = {"player": str(name), "from_month": int(month), "to_month": int(month + 1),
+                                          "pgl_prev": float(pgl_prev), "pgl_new": float(pgl_next),
+                                          "step_used": float(realized_delta), "fixed_prev": float(fixed_prev), "fixed_new": float(fixed_next)}
 
-            st.session_state.pgl_popup = {
-                "player": str(name),
-                "from_month": int(month),
-                "to_month": int(month + 1),
-                "pgl_prev": float(pgl_prev),
-                "pgl_new": float(pgl_next),
-                "step_used": float(realized_delta),
-                "fixed_prev": float(fixed_prev),
-                "fixed_new": float(fixed_next),
-            }
-
-        # L) ilerlet / bitir
         if month >= CFG["MONTHS"]:
             p["finished"] = True
         else:
