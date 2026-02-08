@@ -11,6 +11,21 @@ DEFAULT_MONTHLY_INCOME = 60000
 START_FIXED_COST = 30000
 START_EXTRA_COST = 5000  # Ek harcama sabit başlar (oyuncu giremez/değiştiremez)
 
+# ✅ Vergi dilimi etkisi: 2. aydan itibaren gelir her ay %5 azalır
+TAX_DROP_RATE = 0.05  # %5
+
+def income_for_month(base_income: float, month: int) -> float:
+    """
+    Ay 1: base
+    Ay 2: base * 0.95
+    Ay 3: base * 0.95^2
+    ...
+    """
+    month = int(month)
+    if month <= 1:
+        return float(base_income)
+    return float(base_income * ((1.0 - TAX_DROP_RATE) ** (month - 1)))
+
 # =========================
 # OYUN PARAMETRELERİ
 # =========================
@@ -20,7 +35,7 @@ CFG = {
     # Fiyatlar Genel Düzeyi (FGD) – Ay bazlı değişim adımı (%1-%5 arası, +/-)
     "PGL_MIN_STEP": 0.01,
     "PGL_MAX_STEP": 0.05,
-    "PGL_FLOOR": 0.01,  # ekranda gösterilen FGD seviyesi bandı (%1-%5)
+    "PGL_FLOOR": 0.01,
     "PGL_CAP": 0.05,
 
     "LOAN_ACTIVE_FROM_MONTH": 4,
@@ -122,7 +137,7 @@ def next_pgl(prev_pgl: float, rng: np.random.Generator):
 
     new_pgl = float(prev_pgl + signed_delta)
     new_pgl = float(np.clip(new_pgl, CFG["PGL_FLOOR"], CFG["PGL_CAP"]))
-    realized_delta = float(new_pgl - prev_pgl)  # giderlere uygulanacak +/- değişim
+    realized_delta = float(new_pgl - prev_pgl)
     return new_pgl, realized_delta
 
 def bank_count_for_month(month: int) -> int:
@@ -135,7 +150,6 @@ def banks_for_month(month: int):
     if n == 0:
         return []
 
-    # ay bazlı bankaları sabitle
     if month in st.session_state.bank_state:
         bmap = st.session_state.bank_state[month]
         out = []
@@ -291,7 +305,9 @@ def get_player(name: str) -> dict:
             "dd_accounts": {},
             "td_accounts": {},
 
-            "income_fixed": float(DEFAULT_MONTHLY_INCOME),
+            # ✅ gelir artık ay bazlı hesaplanacak
+            "income_base": float(DEFAULT_MONTHLY_INCOME),
+
             "fixed_current": float(START_FIXED_COST),
             "extra_current": float(START_EXTRA_COST),
             "pgl_current": float(pgl0),
@@ -310,7 +326,7 @@ def get_player(name: str) -> dict:
 with st.sidebar:
     st.header("ℹ️ Oyun Bilgisi")
     st.write(
-        "- **Gelir sabittir.**\n"
+        "- **Gelir**, 2. aydan itibaren vergi dilimi etkisiyle her ay **%5 azalır**.\n"
         "- **Fiyatlar Genel Düzeyi** her ay bir **değişim** (artış/azalış) gösterir.\n"
         "- **Sabit giderler** ve **ek harcama**, bu değişime göre **bir sonraki ay** artar ya da azalır.\n"
         "- **4. aydan itibaren** finansal kurumlar devreye girer."
@@ -534,6 +550,9 @@ p = get_player(name)
 month = int(p["month"])
 opened = open_assets_by_month(month)
 
+# ✅ Ayın geliri (vergi dilimi etkisi dahil)
+income = income_for_month(float(p["income_base"]), month)
+
 # popuplar
 render_theft_modal()
 render_pgl_modal()
@@ -558,7 +577,6 @@ if p.get("finished", False):
 # =========================
 # AY PANELİ (ÖZET)
 # =========================
-income = float(p["income_fixed"])
 pgl = float(p["pgl_current"])
 fixed_this_month = float(p["fixed_current"])
 extra_this_month = float(p["extra_current"])
@@ -577,7 +595,7 @@ r2a, r2b, r2c, r2d = st.columns(4)
 r2a.metric("Fiyatlar Genel Düzeyi (Bu Ay)", fmt_pct(pgl))
 r2b.metric("Sabit Gider (Bu Ay)", fmt_tl(fixed_this_month))
 r2c.metric("Ek Harcama (Bu Ay)", fmt_tl(extra_this_month))
-r2d.metric("Gelir (Sabit)", fmt_tl(income))
+r2d.metric("Gelir (Bu Ay)", fmt_tl(income))
 
 r3a, r3b, r3c, r3d = st.columns(4)
 r3a.metric("Finansal Kurumlar", "Açık (Ay4+)" if can_borrow(month) else "Kapalı (Ay1-3)")
@@ -722,7 +740,7 @@ with tab_game:
     st.info(f"Satış/bozma ile tahmini net nakit girişi: **{fmt_tl(projected_sell_cash_in)}**")
     st.divider()
 
-    # 1) BÜTÇE (Ek harcama otomatik)
+    # 1) BÜTÇE
     st.markdown("#### 1) Bütçe (Bu Ay)")
     total_exp = float(fixed_this_month) + float(extra_this_month)
     st.write(f"Sabit gider: **{fmt_tl(fixed_this_month)}**")
@@ -746,7 +764,10 @@ with tab_game:
 
         sel_bank = p.get("loan_bank")
         sel_rate = float(bank_map_local[sel_bank]["Loan_Rate"]) if (bank_map_local and sel_bank in bank_map_local) else 0.03
+
+        # ✅ Borç tavanı artık AYIN GELİRİ üzerinden
         borrow_max = float(income * CFG["LOAN_MAX_MULT_INCOME"])
+
         st.caption(
             f"Seçili banka: **{sel_bank}** | Faiz: **{sel_rate*100:.2f}% / ay** | "
             f"Bu ay borç tavanı: **{fmt_tl(borrow_max)}** | "
