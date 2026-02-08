@@ -121,8 +121,8 @@ def rng_for_player(name: str, month: int):
 def random_pgl_step(rng: np.random.Generator) -> float:
     return float(rng.uniform(CFG["PGL_MIN_STEP"], CFG["PGL_MAX_STEP"]))
 
-# ✅ PGL (fiyatlar genel düzeyi) güncelleme: random + / -, ama oran hep %1–%5 bandında
-# ✅ ayrıca o ay gider güncellemesinde kullanılacak realized_delta döner (signed)
+# ✅ PGL güncelleme: random + / -, ama oran hep %1–%5 bandında
+# ✅ ayrıca gider güncellemesinde kullanılacak realized_delta döner (signed)
 def next_pgl(prev_pgl: float, rng: np.random.Generator):
     step = random_pgl_step(rng)
     sign = -1.0 if rng.random() < 0.5 else 1.0
@@ -289,7 +289,7 @@ def get_player(name: str) -> dict:
             theft_rng.choice(np.arange(1, CFG["MONTHS"] + 1), size=3, replace=False).tolist()
         )
 
-        # ✅ Başlangıç PGL (fiyatlar genel düzeyi oranı): %1–%5 random
+        # ✅ Başlangıç PGL: %1–%5 random
         pgl0 = float(np.random.default_rng((hash(name) % 10000) + st.session_state.seed + 777).uniform(
             CFG["PGL_FLOOR"], CFG["PGL_CAP"]
         ))
@@ -320,24 +320,20 @@ def get_player(name: str) -> dict:
     return st.session_state.players[name]
 
 # =========================
-# SIDEBAR
+# SIDEBAR (İSTENEN KISA BİLGİ PANELİ)
 # =========================
 with st.sidebar:
-    st.header("🎮 Oyun Kontrol")
+    st.header("ℹ️ Oyun Bilgisi")
+    st.write(
+        "- **Gelir sabittir.**\n"
+        "- **Fiyatlar Genel Düzeyi** her ay bir **değişim** (artış/azalış) gösterir.\n"
+        "- **Sabit giderler**, bu değişime göre **bir sonraki ay** artar ya da azalır.\n"
+        "- **4. aydan itibaren** finansal kurumlar (bankalar vb.) devreye girer ve seçenekler genişler."
+    )
+    st.divider()
     if st.button("🧹 Oyunu Sıfırla"):
         st.session_state.clear()
         st.rerun()
-
-    st.divider()
-    st.header("ℹ️ Kısa Kural Özeti")
-    st.write(
-        "- Gelir **sabit**.\n"
-        "- Fiyatlar genel düzeyi oranı **%1–%5** bandında.\n"
-        "- Her ay **%1–%5** aralığında bir adım seçilir ve +/− uygulanır.\n"
-        "- Sabit gider: **geçen ay × (1 ± adım)** (0 altına düşmez).\n"
-        "- Ay 4+ bankalar açılır: mevduat, kredi.\n"
-        "- Komisyon/spread/ceza vardır."
-    )
 
 st.title("🎮 1. Hafta Oyunu: Neden Finansal Piyasalar ve Kurumlarla İlgileniyoruz?")
 
