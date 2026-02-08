@@ -117,12 +117,9 @@ def rng_for_global(month: int):
 def rng_for_player(name: str, month: int):
     return np.random.default_rng((hash(name) % 10000) + month * 1000 + st.session_state.seed)
 
-# ✅ Aylık adım: %1–%5
 def random_pgl_step(rng: np.random.Generator) -> float:
     return float(rng.uniform(CFG["PGL_MIN_STEP"], CFG["PGL_MAX_STEP"]))
 
-# ✅ PGL güncelleme: random + / -, ama oran hep %1–%5 bandında
-# ✅ ayrıca gider güncellemesinde kullanılacak realized_delta döner (signed)
 def next_pgl(prev_pgl: float, rng: np.random.Generator):
     step = random_pgl_step(rng)
     sign = -1.0 if rng.random() < 0.5 else 1.0
@@ -139,7 +136,6 @@ def bank_count_for_month(month: int) -> int:
         return 0
     return min(2 + (month - 4), 8)
 
-# ✅ Faizler aylar boyunca artıp azalır (random-walk)
 def banks_for_month(month: int):
     n = bank_count_for_month(month)
     if n == 0:
@@ -320,7 +316,7 @@ def get_player(name: str) -> dict:
     return st.session_state.players[name]
 
 # =========================
-# SIDEBAR (İSTENEN KISA BİLGİ PANELİ)
+# SIDEBAR (KISA BİLGİ PANELİ)
 # =========================
 with st.sidebar:
     st.header("ℹ️ Oyun Bilgisi")
@@ -539,7 +535,53 @@ r2b.metric("Bu Ay Sabit Gider", fmt_tl(fixed_this_month))
 r2c.metric("Gelir (Sabit)", fmt_tl(income))
 r2d.metric("Borç Mekanizması", "Açık (Banka)" if can_borrow(month) else "Kapalı (Ay1-3)")
 
-tab_game, tab_banks, tab_log = st.tabs(["🎯 Karar Ekranı", "🏦 Bankalar & Mevduat", "📒 Geçmiş"])
+# ✅ Sekmeler: Oyun Özeti eklendi
+tab_summary, tab_game, tab_banks, tab_log = st.tabs(
+    ["📌 Oyun Özeti", "🎯 Karar Ekranı", "🏦 Bankalar & Mevduat", "📒 Geçmiş"]
+)
+
+# -------------------------------------------------
+# OYUN ÖZETİ + NET SERVET GRAFİĞİ
+# -------------------------------------------------
+with tab_summary:
+    st.subheader("📌 Oyun Özeti")
+    st.write(
+        "Bu sayfada, oyunun temel mantığını hatırlayıp **toplam servetin (net)** aylar içindeki değişimini görebilirsiniz."
+    )
+
+    # Net servet serisi: log varsa logdan; yoksa şu anki durumu tek nokta olarak göster
+    if p["log"]:
+        df = pd.DataFrame(p["log"]).copy()
+        # güvenli kolon adı
+        if "ToplamServet(TL)" in df.columns:
+            df_plot = df[["Ay", "ToplamServet(TL)"]].sort_values("Ay")
+            df_plot = df_plot.rename(columns={"ToplamServet(TL)": "Toplam Servet (Net) - TL"})
+        else:
+            df_plot = df[["Ay"]].sort_values("Ay")
+            df_plot["Toplam Servet (Net) - TL"] = np.nan
+
+        # metrik: başlangıç ve son
+        first_val = float(df_plot["Toplam Servet (Net) - TL"].iloc[0])
+        last_val = float(df_plot["Toplam Servet (Net) - TL"].iloc[-1])
+        delta = last_val - first_val
+
+        cA, cB, cC = st.columns(3)
+        cA.metric("Başlangıç (İlk kayıt)", fmt_tl(first_val))
+        cB.metric("Son (En güncel kayıt)", fmt_tl(last_val), delta=fmt_tl(delta))
+        cC.metric("Kayıtlı Ay Sayısı", str(int(df_plot.shape[0])))
+
+        st.markdown("#### 📈 Toplam Servet (Net) Zaman Serisi")
+        st.line_chart(df_plot.set_index("Ay")["Toplam Servet (Net) - TL"])
+
+        with st.expander("📋 Özet Tablo (Ay - Toplam Servet)", expanded=False):
+            st.dataframe(df_plot, use_container_width=True, hide_index=True, height=260)
+
+    else:
+        # henüz kayıt yok: tek nokta
+        current_net = float(net_wealth(p))
+        st.info("Henüz geçmiş kaydı yok. İlk ayı tamamlayınca grafik oluşacak.")
+        df_plot = pd.DataFrame({"Ay": [0], "Toplam Servet (Net) - TL": [current_net]})
+        st.line_chart(df_plot.set_index("Ay")["Toplam Servet (Net) - TL"])
 
 # -------------------------------------------------
 # BANKALAR & MEVDUAT
@@ -819,7 +861,7 @@ with tab_game:
 
         # J) LOG
         end_cash = float(p["holdings"]["cash"])
-        end_inv = float(total_investments(p))
+        end_inv = float(dd_total(p) + td_total(p) + other_investments_total(p))
         end_debt = float(p["debt"])
         end_total = float(end_cash + end_inv - end_debt)
 
@@ -842,7 +884,7 @@ with tab_game:
             "ToplamServet(TL)": float(end_total),
         })
 
-        # K) ✅ PGL GÜNCELLE + SABİT GİDERİ (geçen ay * (1 ± adım))
+        # K) ✅ PGL GÜNCELLE + SABİT GİDERİ
         if month < CFG["MONTHS"]:
             next_rng = rng_for_player(name, month + 1)
 
