@@ -288,9 +288,6 @@ with st.sidebar:
         "- Ay 4+ bankalar açılır: mevduat, kredi.\n"
         "- Komisyon/spread/ceza vardır."
     )
-    # ✅ Kullanıcının istediği satırlar kaldırıldı:
-    # - "Her oyuncu için 12 ayda en az 3 kez nakit hırsızlığı garantidir."
-    # - "Not: Hırsızlık olduğunda modal pop-up ile uyarı çıkar."
 
 # =========================
 # UI - BAŞLIK
@@ -309,64 +306,90 @@ month = int(p["month"])
 opened = open_assets_by_month(month)
 
 # =========================
-# ✅ HIRSIZLIK "POP-UP" (Streamlit-native, kesin görünür)
+# ✅ HIRSIZLIK MODAL (Pop-up) — Oyuncu kapatana kadar açık
 # =========================
-if st.session_state.get("theft_popup") is not None:
-    pop = st.session_state.theft_popup
+def render_theft_modal():
+    pop = st.session_state.get("theft_popup")
+    if not pop:
+        return
+
     loss = float(pop.get("loss", 0.0))
     remain = float(pop.get("remain", 0.0))
     m = int(pop.get("month", month))
     player = str(pop.get("player", name))
 
-    st.markdown(
-        """
-        <style>
-        .theftModal {
-            border: 4px solid #b30000;
-            border-radius: 18px;
-            padding: 18px 18px 14px 18px;
-            background: #fff5f5;
-            box-shadow: 0 18px 60px rgba(0,0,0,0.18);
-            margin: 10px 0 14px 0;
-        }
-        .theftTitle {
-            font-size: 26px;
-            font-weight: 900;
-            color: #b30000;
-            margin-bottom: 6px;
-        }
-        .theftLine { font-size: 16px; line-height: 1.5; }
-        .theftBig  { font-weight: 900; }
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
+    # 1) Eğer st.dialog varsa: gerçek modal
+    if hasattr(st, "dialog"):
+        @st.dialog("🚨 NAKİT HIRSIZLIĞI!")
+        def _dlg():
+            st.markdown(
+                f"""
+                **Oyuncu:** {player}  
+                **Ay:** {m}
 
-    with st.container():
+                **Kayıp:** :red[**{fmt_tl(loss)}**]  
+                **Kalan Nakit:** **{fmt_tl(remain)}**
+
+                Bu risk yalnızca **nakitte** geçerlidir.
+                """
+            )
+            if st.button("Kapat ✖", use_container_width=True, key=f"close_modal_{player}_{m}"):
+                st.session_state.theft_popup = None
+                st.rerun()
+
+        _dlg()
+
+    # 2) Fallback (eski Streamlit): sayfa üstünde “modal kart”
+    else:
+        st.markdown(
+            """
+            <style>
+            .theftOverlay {
+                position: fixed;
+                top: 0; left: 0;
+                width: 100vw; height: 100vh;
+                background: rgba(0,0,0,0.35);
+                z-index: 9999;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 18px;
+            }
+            .theftCard {
+                background: #fff5f5;
+                border: 4px solid #b30000;
+                border-radius: 18px;
+                padding: 18px;
+                max-width: 520px;
+                width: 100%;
+                box-shadow: 0 18px 60px rgba(0,0,0,0.20);
+            }
+            .theftTitle { font-size: 24px; font-weight: 900; color:#b30000; margin-bottom: 6px; }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+
         st.markdown(
             f"""
-            <div class="theftModal">
-              <div class="theftTitle">🚨 NAKİT HIRSIZLIĞI! 🚨</div>
-              <div class="theftLine"><b>Oyuncu:</b> {player} &nbsp; | &nbsp; <b>Ay:</b> {m}</div>
-              <div class="theftLine" style="margin-top:8px;">
-                <b>Kayıp:</b> <span class="theftBig" style="color:#b30000;">{fmt_tl(loss)}</span>
-              </div>
-              <div class="theftLine">
-                <b>Kalan Nakit:</b> <span class="theftBig">{fmt_tl(remain)}</span>
-              </div>
-              <div class="theftLine" style="margin-top:10px;">
-                Bu risk yalnızca <b>nakitte</b> geçerlidir.
+            <div class="theftOverlay">
+              <div class="theftCard">
+                <div class="theftTitle">🚨 NAKİT HIRSIZLIĞI! 🚨</div>
+                <div><b>Oyuncu:</b> {player} &nbsp; | &nbsp; <b>Ay:</b> {m}</div>
+                <div style="margin-top:10px;"><b>Kayıp:</b> <span style="color:#b30000;font-weight:900;">{fmt_tl(loss)}</span></div>
+                <div><b>Kalan Nakit:</b> <b>{fmt_tl(remain)}</b></div>
+                <div style="margin-top:10px;">Bu risk yalnızca <b>nakitte</b> geçerlidir.</div>
               </div>
             </div>
             """,
             unsafe_allow_html=True
         )
+        # fallback’te kapatma butonu normal akışta:
+        if st.button("Kapat ✖", key=f"close_fallback_{player}_{m}", use_container_width=True):
+            st.session_state.theft_popup = None
+            st.rerun()
 
-        c_close, c_spacer = st.columns([1, 5])
-        with c_close:
-            if st.button("Kapat ✖", key=f"close_theft_{name}_{month}", use_container_width=True):
-                st.session_state.theft_popup = None
-                st.rerun()
+render_theft_modal()
 
 # =========================
 # OYUN BİTTİ
@@ -387,53 +410,33 @@ if p.get("finished", False):
     if float(p.get("debt", 0.0)) > 0:
         st.caption(f"Borç faizi (ağırlıklı ortalama): {fmt_pct(float(p.get('debt_rate', 0.0)))} / ay")
 
-    tabs_end = st.tabs(["📒 Geçmiş", "🏆 Sıralama"])
-    with tabs_end[0]:
-        if p["log"]:
-            st.dataframe(pd.DataFrame(p["log"]), use_container_width=True, hide_index=True, height=520)
-
-    with tabs_end[1]:
-        rows = []
-        for pname, pp in st.session_state.players.items():
-            cash = float(pp["holdings"]["cash"])
-            inv = (
-                float(sum(pp["holdings"].get(k, 0.0) for k in RISK_ASSETS))
-                + float(sum(pp.get("dd_accounts", {}).values()))
-                + float(sum(pp.get("td_accounts", {}).values()))
-            )
-            debt = float(pp.get("debt", 0.0))
-            net = cash + inv - debt
-            status = "Devam"
-            if pp.get("finished") and pp.get("defaulted"):
-                status = "Temerrüt"
-            elif pp.get("finished"):
-                status = "Bitti"
-            month_done = CFG["MONTHS"] if pp.get("finished") else max(int(pp.get("month", 1)) - 1, 0)
-            rows.append({"Sıra": 0, "Oyuncu": pname, "Durum": status, "Ay": month_done, "Servet(Net)": round(net, 0), "Borç": round(debt, 0)})
-
-        lb = pd.DataFrame(rows).sort_values(["Servet(Net)", "Borç"], ascending=[False, True]).reset_index(drop=True)
-        lb["Sıra"] = lb.index + 1
-        st.dataframe(lb, use_container_width=True, hide_index=True, height=420)
+    if p["log"]:
+        st.divider()
+        st.subheader("📒 Geçmiş (Sade)")
+        st.dataframe(pd.DataFrame(p["log"]), use_container_width=True, hide_index=True, height=520)
 
     st.stop()
 
 # =========================
-# AY PANELİ (ÖZET ŞERİT) — ✅ 2 SATIR (sıkışık olmasın)
+# AY PANELİ (ÖZET ŞERİT) — ✅ “Ay/Aşama” küçük ve okunur
 # =========================
 income = float(p["income_fixed"])
 infl = float(p["infl_current"])
 fixed_this_month = float(p["fixed_current"])
 
+st.markdown(f"### 📅 Ay {month}/{CFG['MONTHS']}  —  Aşama: **{stage_label(month)}**")
+st.caption("Aşağıdaki özet kutuları tek bakış içindir. Detaylar sekmelerde.")
+
 r1a, r1b, r1c, r1d = st.columns(4)
-r1a.metric("Ay / Aşama", f"{month}/{CFG['MONTHS']} — {stage_label(month)}")
-r1b.metric("Net Servet", fmt_tl(net_wealth(p)))
-r1c.metric("Nakit", fmt_tl(p["holdings"]["cash"]))
+r1a.metric("Net Servet", fmt_tl(net_wealth(p)))
+r1b.metric("Nakit", fmt_tl(p["holdings"]["cash"]))
+r1c.metric("Yatırım (Toplam)", fmt_tl(total_investments(p)))
 r1d.metric("Borç", fmt_tl(p["debt"]))
 
 r2a, r2b, r2c, r2d = st.columns(4)
 r2a.metric("Enflasyon (Bu Ay)", fmt_pct(infl))
 r2b.metric("Bu Ay Sabit Gider", fmt_tl(fixed_this_month))
-r2c.metric("Yatırım (Toplam)", fmt_tl(total_investments(p)))
+r2c.metric("Gelir (Sabit)", fmt_tl(income))
 r2d.metric("Borç Mekanizması", "Açık (Banka)" if can_borrow(month) else "Kapalı (Ay1-3)")
 
 if float(p.get("debt", 0.0)) > 0:
@@ -560,6 +563,7 @@ with tab_game:
     fee = float(CFG["TX_FEE"])
     pen = float(CFG["EARLY_BREAK_PENALTY"])
 
+    # 0) SATIŞ / BOZMA
     sell_inputs = {k: 0.0 for k in RISK_ASSETS}
     sell_dd_amt = 0.0
     sell_td_amt = 0.0
@@ -630,6 +634,7 @@ with tab_game:
             f"Maliyet: **{fmt_tl(projected_sell_costs)}**"
         )
 
+    # 1) BÜTÇE
     with left:
         with st.expander("1) Bütçe (Bu Ay)", expanded=True):
             available_without_borrow = float(p["holdings"]["cash"]) + float(p["income_fixed"])
@@ -642,6 +647,7 @@ with tab_game:
             if (not can_borrow(month)) and (total_exp > available_without_borrow):
                 st.error("Ay 1–3'te borç yok. Bu bütçe (nakit+gelir) sınırını aşıyor → temerrüt olur. Ek harcamayı azaltın.")
 
+    # 1.5) BORÇ
     borrow_amt_input = 0.0
     with right:
         with st.expander("1.5) Bankadan Borç Alma (Opsiyonel)", expanded=False):
@@ -672,7 +678,7 @@ with tab_game:
             else:
                 st.caption("Ay 1–3: Finansal kurum yok → bankadan borç alınamaz.")
 
-    total_exp = fixed_this_month + float(st.session_state.get(f"extra_{name}_{month}", 0.0))
+    total_exp = fixed_this_month + float(extra)
     available_for_invest_preview = float(p["holdings"]["cash"]) + projected_sell_cash_in + income - total_exp + float(borrow_amt_input)
     if not can_borrow(month):
         available_for_invest_preview = max(0.0, available_for_invest_preview)
@@ -680,6 +686,7 @@ with tab_game:
     with right:
         st.success(f"💰 Yatırım için MAX nakit (önizleme): **{fmt_tl(available_for_invest_preview)}**")
 
+    # 2) YATIRIM (ALIŞ)
     inv_inputs = {}
     max_buy = float(available_for_invest_preview)
 
@@ -736,6 +743,7 @@ with tab_game:
             if total_buy > max_buy + 1e-9:
                 st.error("Toplam alış, yatırım için kullanılabilir MAX nakdi aşıyor. Tutarları düşürün.")
 
+    # 3) BORÇ ÖDEME
     repay_amt_input = 0.0
     with right:
         with st.expander("3) Borç Ödeme (Ay Sonu)", expanded=False):
@@ -905,7 +913,7 @@ with tab_game:
             theft_loss = float(p["holdings"]["cash"]) * sev
             p["holdings"]["cash"] -= theft_loss
 
-            # ✅ Pop-up tetikle
+            # ✅ Modal tetikle (oyuncu kapatana kadar kalır)
             st.session_state.theft_popup = {
                 "loss": float(theft_loss),
                 "remain": float(p["holdings"]["cash"]),
