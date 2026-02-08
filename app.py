@@ -128,29 +128,63 @@ def bank_count_for_month(month: int) -> int:
         return 0
     return min(2 + (month - 4), 8)
 
+# ✅ Faizler (vadeli + kredi) artık aylar boyunca artıp azalır (random-walk)
 def banks_for_month(month: int):
     n = bank_count_for_month(month)
     if n == 0:
         return []
+
+    # aynı ayda stabil kalsın
+    if month in st.session_state.bank_state:
+        bmap = st.session_state.bank_state[month]
+        out = []
+        for i in range(n):
+            name = f"Banka {i+1}"
+            out.append({"Bank": name, **bmap[name]})
+        return out
+
     r = rng_for_global(month)
-    td_rates = r.uniform(CFG["TD_RATE_MIN"], CFG["TD_RATE_MAX"], size=n)
 
-    order = np.argsort(td_rates)  # düşük->yüksek faiz
-    banks = [None] * n
-    for rank, idx in enumerate(order):
-        td = float(td_rates[idx])
-        x = rank / max(n - 1, 1)
-        base_guar = CFG["GUAR_MAX"] - x * (CFG["GUAR_MAX"] - CFG["GUAR_MIN"])
-        noise = float(r.normal(0, 0.015))
-        guarantee = float(np.clip(base_guar + noise, CFG["GUAR_MIN"], CFG["GUAR_MAX"]))
+    td_min, td_max = float(CFG["TD_RATE_MIN"]), float(CFG["TD_RATE_MAX"])
+    gmin, gmax = float(CFG["GUAR_MIN"]), float(CFG["GUAR_MAX"])
 
-        loan_noise = float(r.normal(0, CFG["LOAN_RATE_NOISE"]))
+    # adım büyüklükleri
+    TD_STEP = 0.0015     # ~0.15 puan
+    G_STEP  = 0.010      # ~1 puan
+    prev = st.session_state.bank_state.get(month - 1)
+
+    bmap_this = {}
+
+    for i in range(n):
+        bname = f"Banka {i+1}"
+
+        if prev and bname in prev:
+            td_prev = float(prev[bname]["TD_Rate"])
+            g_prev  = float(prev[bname]["Guarantee"])
+            td = td_prev + float(r.normal(0, TD_STEP))
+            guar = g_prev + float(r.normal(0, G_STEP))
+            td = float(np.clip(td, td_min, td_max))
+            guar = float(np.clip(guar, gmin, gmax))
+        else:
+            td = float(r.uniform(td_min, td_max))
+            x = (td - td_min) / max(td_max - td_min, 1e-9)
+            base_guar = gmax - x * (gmax - gmin)
+            guar = float(np.clip(base_guar + float(r.normal(0, 0.015)), gmin, gmax))
+
         loan_rate = float(np.clip(
-            CFG["LOAN_RATE_BASE"] + (1.0 - guarantee) * CFG["LOAN_RATE_ADD"] + loan_noise,
+            float(CFG["LOAN_RATE_BASE"]) + (1.0 - guar) * float(CFG["LOAN_RATE_ADD"]) + float(r.normal(0, float(CFG["LOAN_RATE_NOISE"]))),
             0.010, 0.060
         ))
-        banks[idx] = {"Bank": f"Banka {idx + 1}", "TD_Rate": td, "Guarantee": guarantee, "Loan_Rate": loan_rate}
-    return banks
+
+        bmap_this[bname] = {"TD_Rate": td, "Guarantee": guar, "Loan_Rate": loan_rate}
+
+    st.session_state.bank_state[month] = bmap_this
+
+    out = []
+    for i in range(n):
+        name = f"Banka {i+1}"
+        out.append({"Bank": name, **bmap_this[name]})
+    return out
 
 def banks_df(month: int) -> pd.DataFrame:
     b = banks_for_month(month)
@@ -239,6 +273,10 @@ if "players" not in st.session_state:
     st.session_state.players = {}
 if "theft_popup" not in st.session_state:
     st.session_state.theft_popup = None
+if "infl_popup" not in st.session_state:
+    st.session_state.infl_popup = None
+if "bank_state" not in st.session_state:
+    st.session_state.bank_state = {}
 
 def get_player(name: str) -> dict:
     if name not in st.session_state.players:
@@ -272,7 +310,7 @@ def get_player(name: str) -> dict:
     return st.session_state.players[name]
 
 # =========================
-# SIDEBAR (istenen satırlar kaldırıldı)
+# SIDEBAR (istenen satırlar yok)
 # =========================
 with st.sidebar:
     st.header("🎮 Oyun Kontrol")
@@ -284,7 +322,7 @@ with st.sidebar:
     st.header("ℹ️ Kısa Kural Özeti")
     st.write(
         "- Gelir **sabit**.\n"
-        "- Giderler **enflasyonla artar**.\n"
+        "- Giderler **enflasyonla artar/azalır**.\n"
         "- Ay 4+ bankalar açılır: mevduat, kredi.\n"
         "- Komisyon/spread/ceza vardır."
     )
@@ -295,19 +333,39 @@ with st.sidebar:
 st.title("🎮 1. Hafta Oyunu: Neden Finansal Piyasalar ve Kurumlarla İlgileniyoruz?")
 
 # =========================
-# OYUNCU ADI
+# POP-UP RENDERERS (Theft + Inflation)
 # =========================
-name = st.text_input("Oyuncu Adı")
-if not name:
-    st.stop()
+def _overlay_style():
+    st.markdown(
+        """
+        <style>
+        .ovl {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            background: rgba(0,0,0,0.35);
+            z-index: 9999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 18px;
+        }
+        .card {
+            background: #ffffff;
+            border-radius: 18px;
+            padding: 18px;
+            max-width: 560px;
+            width: 100%;
+            box-shadow: 0 18px 60px rgba(0,0,0,0.20);
+            border: 2px solid rgba(0,0,0,0.06);
+        }
+        .titleRed { font-size: 22px; font-weight: 900; color:#b30000; margin-bottom: 6px; }
+        .titleBlue { font-size: 22px; font-weight: 900; color:#0b4aa2; margin-bottom: 6px; }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
 
-p = get_player(name)
-month = int(p["month"])
-opened = open_assets_by_month(month)
-
-# =========================
-# ✅ HIRSIZLIK MODAL (Pop-up)
-# =========================
 def render_theft_modal():
     pop = st.session_state.get("theft_popup")
     if not pop:
@@ -315,10 +373,9 @@ def render_theft_modal():
 
     loss = float(pop.get("loss", 0.0))
     remain = float(pop.get("remain", 0.0))
-    m = int(pop.get("month", month))
-    player = str(pop.get("player", name))
+    m = int(pop.get("month", 0))
+    player = str(pop.get("player", ""))
 
-    # 1) st.dialog varsa: gerçek modal
     if hasattr(st, "dialog"):
         @st.dialog("🚨 NAKİT HIRSIZLIĞI!")
         def _dlg():
@@ -333,47 +390,17 @@ def render_theft_modal():
                 Bu risk yalnızca **nakitte** geçerlidir.
                 """
             )
-            if st.button("Kapat ✖", use_container_width=True, key=f"close_modal_{player}_{m}"):
+            if st.button("Kapat ✖", use_container_width=True, key=f"close_theft_{player}_{m}"):
                 st.session_state.theft_popup = None
                 st.rerun()
         _dlg()
-
-    # 2) Fallback: overlay + kapat butonu
     else:
-        st.markdown(
-            """
-            <style>
-            .theftOverlay {
-                position: fixed;
-                top: 0; left: 0;
-                width: 100vw; height: 100vh;
-                background: rgba(0,0,0,0.35);
-                z-index: 9999;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                padding: 18px;
-            }
-            .theftCard {
-                background: #fff5f5;
-                border: 4px solid #b30000;
-                border-radius: 18px;
-                padding: 18px;
-                max-width: 520px;
-                width: 100%;
-                box-shadow: 0 18px 60px rgba(0,0,0,0.20);
-            }
-            .theftTitle { font-size: 24px; font-weight: 900; color:#b30000; margin-bottom: 6px; }
-            </style>
-            """,
-            unsafe_allow_html=True
-        )
-
+        _overlay_style()
         st.markdown(
             f"""
-            <div class="theftOverlay">
-              <div class="theftCard">
-                <div class="theftTitle">🚨 NAKİT HIRSIZLIĞI! 🚨</div>
+            <div class="ovl">
+              <div class="card" style="border:4px solid #b30000;background:#fff5f5;">
+                <div class="titleRed">🚨 NAKİT HIRSIZLIĞI! 🚨</div>
                 <div><b>Oyuncu:</b> {player} &nbsp; | &nbsp; <b>Ay:</b> {m}</div>
                 <div style="margin-top:10px;"><b>Kayıp:</b> <span style="color:#b30000;font-weight:900;">{fmt_tl(loss)}</span></div>
                 <div><b>Kalan Nakit:</b> <b>{fmt_tl(remain)}</b></div>
@@ -383,11 +410,83 @@ def render_theft_modal():
             """,
             unsafe_allow_html=True
         )
-        if st.button("Kapat ✖", key=f"close_fallback_{player}_{m}", use_container_width=True):
+        if st.button("Kapat ✖", use_container_width=True, key=f"close_theft_fallback_{player}_{m}"):
             st.session_state.theft_popup = None
             st.rerun()
 
+def render_infl_modal():
+    pop = st.session_state.get("infl_popup")
+    if not pop:
+        return
+
+    player = str(pop.get("player", ""))
+    from_month = int(pop.get("from_month", 0))
+    to_month = int(pop.get("to_month", 0))
+    infl_prev = float(pop.get("infl_prev", 0.0))
+    infl_new = float(pop.get("infl_new", 0.0))
+    fixed_prev = float(pop.get("fixed_prev", 0.0))
+    fixed_new = float(pop.get("fixed_new", 0.0))
+
+    delta = fixed_new - fixed_prev
+    if abs(delta) < 1e-6:
+        msg = "Enflasyon değişimi bu ay giderleri anlamlı düzeyde değiştirmedi."
+    elif delta > 0:
+        msg = "Enflasyon **arttığı** için bir sonraki ay sabit giderler **arttı**."
+    else:
+        msg = "Enflasyon **azaldığı** için bir sonraki ay sabit giderler **azaldı**."
+
+    if hasattr(st, "dialog"):
+        @st.dialog("📌 Enflasyon Güncellendi")
+        def _dlg():
+            st.markdown(
+                f"""
+                **Oyuncu:** {player}  
+                **Geçiş:** Ay {from_month} → Ay {to_month}
+
+                **Enflasyon:** {fmt_pct(infl_prev)} → **{fmt_pct(infl_new)}**  
+                **Sabit Gider:** {fmt_tl(fixed_prev)} → **{fmt_tl(fixed_new)}**
+
+                {msg}
+                """
+            )
+            if st.button("Kapat ✖", use_container_width=True, key=f"close_infl_{player}_{to_month}"):
+                st.session_state.infl_popup = None
+                st.rerun()
+        _dlg()
+    else:
+        _overlay_style()
+        st.markdown(
+            f"""
+            <div class="ovl">
+              <div class="card" style="border:4px solid #0b4aa2;background:#f3f8ff;">
+                <div class="titleBlue">📌 Enflasyon Güncellendi</div>
+                <div><b>Oyuncu:</b> {player} &nbsp; | &nbsp; <b>Geçiş:</b> Ay {from_month} → Ay {to_month}</div>
+                <div style="margin-top:10px;"><b>Enflasyon:</b> {fmt_pct(infl_prev)} → <b>{fmt_pct(infl_new)}</b></div>
+                <div><b>Sabit Gider:</b> {fmt_tl(fixed_prev)} → <b>{fmt_tl(fixed_new)}</b></div>
+                <div style="margin-top:10px;">{msg}</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        if st.button("Kapat ✖", use_container_width=True, key=f"close_infl_fallback_{player}_{to_month}"):
+            st.session_state.infl_popup = None
+            st.rerun()
+
+# =========================
+# OYUNCU ADI
+# =========================
+name = st.text_input("Oyuncu Adı")
+if not name:
+    st.stop()
+
+p = get_player(name)
+month = int(p["month"])
+opened = open_assets_by_month(month)
+
+# pop-up'ları sayfanın üstünde render et
 render_theft_modal()
+render_infl_modal()
 
 # =========================
 # OYUN BİTTİ
@@ -404,14 +503,12 @@ if p.get("finished", False):
     a2.metric("Yatırım (Toplam)", fmt_tl(total_investments(p)))
     a3.metric("Borç", fmt_tl(p["debt"]))
     a4.metric("Servet (Net)", fmt_tl(net_wealth(p)))
-
     if float(p.get("debt", 0.0)) > 0:
         st.caption(f"Borç faizi (ağırlıklı ortalama): {fmt_pct(float(p.get('debt_rate', 0.0)))} / ay")
-
     st.stop()
 
 # =========================
-# AY PANELİ (ÖZET ŞERİT)
+# AY PANELİ (ÖZET)
 # =========================
 income = float(p["income_fixed"])
 infl = float(p["infl_current"])
@@ -421,7 +518,6 @@ st.markdown(f"### 📅 Ay {month}/{CFG['MONTHS']}  —  Aşama: **{stage_label(m
 st.caption("Özet kutuları tek bakış içindir. Detaylar sekmelerde.")
 st.progress((month - 1) / CFG["MONTHS"])
 
-# ✅ İstenen: oyuncu adının altındaki ekran sıkışık olmasın → 2 satır özet
 r1a, r1b, r1c, r1d = st.columns(4)
 r1a.metric("Net Servet", fmt_tl(net_wealth(p)))
 r1b.metric("Nakit", fmt_tl(p["holdings"]["cash"]))
@@ -538,7 +634,7 @@ with tab_rank:
     st.dataframe(lb, use_container_width=True, hide_index=True, height=520)
 
 # -------------------------------------------------
-# GEÇMİŞ — ✅ YATAY KAYDIRMA YOK: Kart/expander görünümü
+# GEÇMİŞ — Kaydırmasız
 # -------------------------------------------------
 with tab_log:
     st.subheader("📒 Geçmiş (Tüm Alanlar — Kaydırmasız)")
@@ -840,7 +936,7 @@ with tab_game:
 
         # B) GELİR / GİDER
         p["holdings"]["cash"] += income
-        p["holdings"]["cash"] -= total_exp
+        p["holdings"]["cash"] -= (fixed_this_month + float(extra))
 
         # C) İSTEĞE BAĞLI BORÇ (Ay 4+)
         bank_map_local = {}
@@ -1026,14 +1122,30 @@ with tab_game:
             "ToplamServet(TL)": float(end_total),
         })
 
-        # K) sonraki ay
+        # K) ✅ ENFLASYON GÜNCELLE + POP-UP (Ay+1 için)
         if month < CFG["MONTHS"]:
             next_rng = rng_for_player(name, month + 1)
-            infl_next = next_inflation(float(p["infl_current"]), next_rng)
-            p["infl_current"] = float(infl_next)
-            p["fixed_current"] = float(fixed_this_month * (1.0 + infl_next))
 
-        # L) ilerlet
+            infl_prev = float(p["infl_current"])
+            fixed_prev = float(p["fixed_current"])
+
+            infl_next = next_inflation(infl_prev, next_rng)
+            fixed_next = float(fixed_prev * (1.0 + infl_next))
+
+            p["infl_current"] = float(infl_next)
+            p["fixed_current"] = float(fixed_next)
+
+            st.session_state.infl_popup = {
+                "player": str(name),
+                "from_month": int(month),
+                "to_month": int(month + 1),
+                "infl_prev": float(infl_prev),
+                "infl_new": float(infl_next),
+                "fixed_prev": float(fixed_prev),
+                "fixed_new": float(fixed_next),
+            }
+
+        # L) ilerlet / bitir
         if month >= CFG["MONTHS"]:
             p["finished"] = True
         else:
