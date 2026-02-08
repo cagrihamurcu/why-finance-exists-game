@@ -9,7 +9,7 @@ st.set_page_config(page_title="Borsa Uygulamaları - 1. Hafta Oyunu", layout="wi
 # =========================
 DEFAULT_MONTHLY_INCOME = 60000
 START_FIXED_COST = 30000
-START_EXTRA_COST = 5000  # ✅ Ek harcama sabit başlar (oyuncu giremez/değiştiremez)
+START_EXTRA_COST = 5000  # Ek harcama sabit başlar (oyuncu giremez/değiştiremez)
 
 # =========================
 # OYUN PARAMETRELERİ
@@ -122,7 +122,7 @@ def next_pgl(prev_pgl: float, rng: np.random.Generator):
 
     new_pgl = float(prev_pgl + signed_delta)
     new_pgl = float(np.clip(new_pgl, CFG["PGL_FLOOR"], CFG["PGL_CAP"]))
-    realized_delta = float(new_pgl - prev_pgl)  # ✅ giderlere uygulanacak +/- değişim
+    realized_delta = float(new_pgl - prev_pgl)  # giderlere uygulanacak +/- değişim
     return new_pgl, realized_delta
 
 def bank_count_for_month(month: int) -> int:
@@ -135,6 +135,7 @@ def banks_for_month(month: int):
     if n == 0:
         return []
 
+    # ay bazlı bankaları sabitle
     if month in st.session_state.bank_state:
         bmap = st.session_state.bank_state[month]
         out = []
@@ -292,7 +293,7 @@ def get_player(name: str) -> dict:
 
             "income_fixed": float(DEFAULT_MONTHLY_INCOME),
             "fixed_current": float(START_FIXED_COST),
-            "extra_current": float(START_EXTRA_COST),  # ✅ Ek harcama: sabit ama FGD değişiminden etkilenir
+            "extra_current": float(START_EXTRA_COST),
             "pgl_current": float(pgl0),
 
             "last_dd_bank": None,
@@ -560,7 +561,7 @@ if p.get("finished", False):
 income = float(p["income_fixed"])
 pgl = float(p["pgl_current"])
 fixed_this_month = float(p["fixed_current"])
-extra_this_month = float(p["extra_current"])  # ✅ otomatik
+extra_this_month = float(p["extra_current"])
 due_this_month = float(loan_due_amount(p, month))
 
 st.markdown(f"### 📅 Ay {month}/{CFG['MONTHS']}  —  Aşama: **{stage_label(month)}**")
@@ -587,10 +588,11 @@ r3d.metric("Diğer Yatırımlar", fmt_tl(other_investments_total(p)))
 if due_this_month > 0:
     st.warning(f"⚠️ Bu ay vadesi gelen 1 aylık borç ödemesi var: **{fmt_tl(due_this_month)}** (Ay sonunda ödenir)")
 
-tab_game, tab_banks, tab_log, tab_summary = st.tabs(
-    ["🎯 Karar Ekranı", "🏦 Bankalar & Mevduat", "📒 Geçmiş", "📌 Oyun Özeti"]
-)
+tab_game, tab_banks, tab_log = st.tabs(["🎯 Karar Ekranı", "🏦 Bankalar & Mevduat", "📒 Geçmiş"])
 
+# =========================
+# BANKALAR TAB
+# =========================
 with tab_banks:
     st.subheader("🏦 Bankalar ve Mevduat")
 
@@ -619,6 +621,9 @@ with tab_banks:
             p["loan_bank"] = st.selectbox("Kredi bankası", banks_names, index=banks_names.index(p["loan_bank"]), key=f"sel_loan_{name}_{month}")
             st.caption(f"Kredi faizi: **{bank_map[p['loan_bank']]['Loan_Rate']*100:.2f}% / ay** (1 ay vadeli)")
 
+# =========================
+# GEÇMİŞ TAB
+# =========================
 with tab_log:
     st.subheader("📒 Geçmiş (Kaydırmasız)")
     if not p["log"]:
@@ -638,7 +643,7 @@ with tab_log:
                     with col:
                         for k, v in pairs:
                             if isinstance(v, (int, float)):
-                                if "Fiyatlar" in str(k) or "Duzeyi" in str(k):
+                                if "Fiyatlar" in str(k):
                                     st.markdown(f"**{k}:** {fmt_pct(float(v))}")
                                 else:
                                     st.markdown(f"**{k}:** {fmt_tl(float(v))}")
@@ -648,19 +653,9 @@ with tab_log:
                 render_kv(left_items, cols[0])
                 render_kv(right_items, cols[1])
 
-with tab_summary:
-    st.subheader("📌 Oyun Özeti")
-    st.write("Toplam servetin (net) aylar içindeki değişimi:")
-    if p["log"]:
-        df = pd.DataFrame(p["log"]).copy()
-        df_plot = df[["Ay", "ToplamServet(TL)"]].sort_values("Ay")
-        df_plot = df_plot.rename(columns={"ToplamServet(TL)": "Toplam Servet (Net) - TL"})
-        st.line_chart(df_plot.set_index("Ay")["Toplam Servet (Net) - TL"])
-        with st.expander("📋 Özet Tablo", expanded=False):
-            st.dataframe(df_plot, use_container_width=True, hide_index=True, height=260)
-    else:
-        st.info("Henüz geçmiş kaydı yok. İlk ayı tamamlayınca grafik oluşacak.")
-
+# =========================
+# KARAR EKRANI TAB
+# =========================
 with tab_game:
     st.subheader("🎯 Bu Ay Kararları")
 
@@ -727,9 +722,8 @@ with tab_game:
     st.info(f"Satış/bozma ile tahmini net nakit girişi: **{fmt_tl(projected_sell_cash_in)}**")
     st.divider()
 
-    # 1) BÜTÇE (Ek harcama artık otomatik)
+    # 1) BÜTÇE (Ek harcama otomatik)
     st.markdown("#### 1) Bütçe (Bu Ay)")
-    st.caption("Ek harcama sabittir ve oyuncu tarafından değiştirilemez. FGD değişiminden etkilenir.")
     total_exp = float(fixed_this_month) + float(extra_this_month)
     st.write(f"Sabit gider: **{fmt_tl(fixed_this_month)}**")
     st.write(f"Ek harcama: **{fmt_tl(extra_this_month)}**")
@@ -1075,7 +1069,7 @@ with tab_game:
             "ToplamServet(TL)": float(end_total),
         })
 
-        # K) PGL update (✅ sabit gider + ek harcama ikisi de etkilenir)
+        # K) PGL update (sabit gider + ek harcama etkilenir)
         if month < CFG["MONTHS"]:
             next_rng = rng_for_player(name, month + 1)
 
@@ -1086,7 +1080,7 @@ with tab_game:
             pgl_next, realized_delta = next_pgl(pgl_prev, next_rng)
 
             fixed_next = float(max(0.0, fixed_prev * (1.0 + realized_delta)))
-            extra_next = float(max(0.0, extra_prev * (1.0 + realized_delta)))  # ✅ sıfır altına düşmez
+            extra_next = float(max(0.0, extra_prev * (1.0 + realized_delta)))
 
             p["pgl_current"] = float(pgl_next)
             p["fixed_current"] = float(fixed_next)
@@ -1112,3 +1106,17 @@ with tab_game:
             p["month"] += 1
 
         st.rerun()
+
+# =========================
+# ✅ SAYFANIN EN SONU: GRAFİK
+# =========================
+st.divider()
+st.subheader("📈 Toplam Servet (Net) — Aylar İçinde Değişim (Grafik)")
+
+if p["log"]:
+    df = pd.DataFrame(p["log"]).copy()
+    df_plot = df[["Ay", "ToplamServet(TL)"]].sort_values("Ay")
+    df_plot = df_plot.rename(columns={"ToplamServet(TL)": "Toplam Servet (Net) - TL"})
+    st.line_chart(df_plot.set_index("Ay")["Toplam Servet (Net) - TL"])
+else:
+    st.info("Grafiğin oluşması için en az 1 ayı tamamlayın.")
