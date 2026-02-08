@@ -550,7 +550,15 @@ with tab_rank:
 with tab_log:
     st.subheader("📒 Geçmiş (Sade)")
     if p["log"]:
-        st.dataframe(pd.DataFrame(p["log"]), use_container_width=True, hide_index=True, height=560)
+        df_log = pd.DataFrame(p["log"])
+
+        st.dataframe(
+            df_log,
+            use_container_width=True,
+            hide_index=True,
+            height=560,
+            column_config={c: st.column_config.Column(width="medium") for c in df_log.columns},
+        )
     else:
         st.info("Henüz geçmiş kaydı yok. 1. ayı tamamlayınca burada görünecek.")
 
