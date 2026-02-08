@@ -451,15 +451,28 @@ def render_infl_modal():
         msg = "Enflasyon band sınırına çarptığı için bu ay adım **0** olarak gerçekleşti."
 
     if hasattr(st, "dialog"):
-        @st.dialog("📌 Enflasyon Güncellendi")
+@st.dialog("📌 Fiyatlar Genel Düzeyi Güncellendi")
         def _dlg():
             st.markdown(
                 f"""
                 **Oyuncu:** {player}  
                 **Geçiş:** Ay {from_month} → Ay {to_month}
 
-                **Enflasyon:** {fmt_pct(infl_prev)} → **{fmt_pct(infl_new)}**  
-                **Uygulanan Adım (±):** **{fmt_pct(step_used)}**  
+                arrow = "⬆️" if step_used > 0 else ("⬇️" if step_used < 0 else "➡️")
+step_text = f"{arrow} {fmt_pct(abs(step_used))}"
+
+st.markdown(
+    f"""
+    **Oyuncu:** {player}  
+    **Geçiş:** Ay {from_month} → Ay {to_month}
+
+    **Fiyatlar Genel Düzeyi:** {fmt_pct(infl_prev)} → **{fmt_pct(infl_new)}**  
+    **Bu Ay Değişim:** **{step_text}**  
+    **Sabit Gider:** {fmt_tl(fixed_prev)} → **{fmt_tl(fixed_new)}**
+
+    {msg}
+    """
+)
                 **Sabit Gider:** {fmt_tl(fixed_prev)} → **{fmt_tl(fixed_new)}**
 
                 {msg}
@@ -539,7 +552,8 @@ r1c.metric("Yatırım (Toplam)", fmt_tl(total_investments(p)))
 r1d.metric("Borç", fmt_tl(p["debt"]))
 
 r2a, r2b, r2c, r2d = st.columns(4)
-r2a.metric("Enflasyon (Bu Ay)", fmt_pct(infl))
+# infl burada artık "fiyatlar genel düzeyi oranı" gibi duruyor ama biz metni değiştiriyoruz.
+r2a.metric("Fiyatlar Genel Düzeyi (Bu Ay)", fmt_pct(infl))
 r2b.metric("Bu Ay Sabit Gider", fmt_tl(fixed_this_month))
 r2c.metric("Gelir (Sabit)", fmt_tl(income))
 r2d.metric("Borç Mekanizması", "Açık (Banka)" if can_borrow(month) else "Kapalı (Ay1-3)")
@@ -611,7 +625,7 @@ with tab_log:
                     with col:
                         for k, v in pairs:
                             if isinstance(v, (int, float)):
-                                if "Enflasyon" in str(k) or "FaizOranı" in str(k):
+if "Fiyatlar" in str(k) or "FaizOranı" in str(k):
                                     st.markdown(f"**{k}:** {fmt_pct(float(v))}")
                                 else:
                                     st.markdown(f"**{k}:** {fmt_tl(float(v))}")
@@ -834,7 +848,7 @@ with tab_game:
         p["log"].append({
             "Ay": month,
             "Aşama": stage_label(month),
-            "EnflasyonOranı": float(infl),
+"FiyatlarGenelDuzeyi": float(infl),
             "Gelir(TL)": float(income),
             "SabitGider(TL)": float(fixed_this_month),
             "EkHarcama(TL)": float(extra),
