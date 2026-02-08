@@ -15,12 +15,7 @@ START_EXTRA_COST = 5000  # Ek harcama sabit başlar (oyuncu giremez/değiştirem
 TAX_DROP_RATE = 0.05  # %5
 
 def income_for_month(base_income: float, month: int) -> float:
-    """
-    Ay 1: base
-    Ay 2: base * 0.95
-    Ay 3: base * 0.95^2
-    ...
-    """
+    """Ay 1: base, Ay2: base*0.95, Ay3: base*0.95^2 ..."""
     month = int(month)
     if month <= 1:
         return float(base_income)
@@ -305,7 +300,6 @@ def get_player(name: str) -> dict:
             "dd_accounts": {},
             "td_accounts": {},
 
-            # ✅ gelir artık ay bazlı hesaplanacak
             "income_base": float(DEFAULT_MONTHLY_INCOME),
 
             "fixed_current": float(START_FIXED_COST),
@@ -740,16 +734,23 @@ with tab_game:
     st.info(f"Satış/bozma ile tahmini net nakit girişi: **{fmt_tl(projected_sell_cash_in)}**")
     st.divider()
 
-    # 1) BÜTÇE
+    # 1) BÜTÇE (✅ gelir de yazıyor)
     st.markdown("#### 1) Bütçe (Bu Ay)")
+
+    st.write(f"Gelir (bu ay): **{fmt_tl(income)}**")
+    st.write(f"Sabit gider (bu ay): **{fmt_tl(fixed_this_month)}**")
+    st.write(f"Ek harcama (bu ay): **{fmt_tl(extra_this_month)}**")
+
     total_exp = float(fixed_this_month) + float(extra_this_month)
-    st.write(f"Sabit gider: **{fmt_tl(fixed_this_month)}**")
-    st.write(f"Ek harcama: **{fmt_tl(extra_this_month)}**")
     st.write(f"Toplam gider: **{fmt_tl(total_exp)}**")
 
     available_without_borrow = float(p["holdings"]["cash"]) + projected_sell_cash_in + income
+    st.write(f"Nakit + satış(önizleme) + gelir: **{fmt_tl(available_without_borrow)}**")
+    st.write(f"Bütçe sonucu (gelir+nakit - gider): **{fmt_tl(available_without_borrow - total_exp)}**")
+
     if (not can_borrow(month)) and (total_exp > available_without_borrow):
         st.error("Ay 1–3'te borç yok. Bu ay giderler (nakit+gelir) sınırını aşıyor → temerrüt olur.")
+
     st.divider()
 
     # 2) BORÇ AL
@@ -765,7 +766,6 @@ with tab_game:
         sel_bank = p.get("loan_bank")
         sel_rate = float(bank_map_local[sel_bank]["Loan_Rate"]) if (bank_map_local and sel_bank in bank_map_local) else 0.03
 
-        # ✅ Borç tavanı artık AYIN GELİRİ üzerinden
         borrow_max = float(income * CFG["LOAN_MAX_MULT_INCOME"])
 
         st.caption(
@@ -776,6 +776,7 @@ with tab_game:
         borrow_amt_input = safe_number_input("Bu ay alınacak borç (TL)", f"borrow_{name}_{month}", borrow_max, 1000.0)
     else:
         st.caption("Ay 1–3: bankadan borç alınamaz.")
+
     st.divider()
 
     # 3) BORÇ ÖDEME (zorunlu)
