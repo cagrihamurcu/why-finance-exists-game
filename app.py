@@ -7,8 +7,8 @@ st.set_page_config(page_title="Finans Neden Var?", layout="wide")
 # =========================
 # KİLİTLİ BAŞLANGIÇ DEĞERLERİ (oyuncu değiştiremez)
 # =========================
-DEFAULT_MONTHLY_INCOME = 60000   # sabit gelir
-START_FIXED_COST = 30000        # Ay 1 sabit gider (baz yok, buradan başlıyor)
+DEFAULT_MONTHLY_INCOME = 60000
+START_FIXED_COST = 30000  # Ay1 sabit gider
 
 # =========================
 # AYARLAR
@@ -16,13 +16,14 @@ START_FIXED_COST = 30000        # Ay 1 sabit gider (baz yok, buradan başlıyor)
 CFG = {
     "MONTHS": 12,
 
-    # Enflasyon: %20 ile başlar, her ay +%5 artar (oran olarak)
+    # Enflasyon: %20 ile başlar, her ay +%5 artar
     "INFL_START": 0.20,
     "INFL_STEP": 0.05,
 
-    # Kurum yokken elde nakit riski
-    "CASH_LOSS_PROB": 0.05,
-    "CASH_LOSS_SEV": 0.10,
+    # NAKİT HIRSIZLIK RİSKİ (bankadan önce yüksek, sonra daha düşük)
+    "CASH_THEFT_PROB_STAGE1": 0.08,   # Ay 1-3
+    "CASH_THEFT_PROB_STAGE2": 0.03,   # Ay 4-12
+    "CASH_THEFT_SEV": 0.20,           # çalınan oran (nakdin %20'si)
 
     # Mevduat (aylık)
     "DD_RATE": 0.003,   # vadesiz
@@ -38,7 +39,7 @@ CFG = {
     "FX_MU": 0.010,
     "FX_SIG": 0.040,
 
-    # Makro kriz ayı
+    # Kriz ayı
     "CRISIS_MONTH": 6,
     "CRISIS_EQ": -0.12,
     "CRISIS_CR": -0.20,
@@ -46,7 +47,7 @@ CFG = {
     "CRISIS_FX": +0.07,
 
     # Kredi faizi (aylık)
-    "LOAN_RATE": 0.025,  # %2.5 / ay
+    "LOAN_RATE": 0.025,
 }
 
 ASSETS = {
@@ -81,7 +82,6 @@ def can_borrow(month: int) -> bool:
     return month >= 4
 
 def inflation_rate_for_month(month: int) -> float:
-    # Ay1: 0.20, Ay2: 0.25, Ay3: 0.30, ...
     return float(CFG["INFL_START"] + CFG["INFL_STEP"] * (month - 1))
 
 def fmt_tl(x: float) -> str:
@@ -107,10 +107,8 @@ def get_player(name: str) -> dict:
             "debt": 0.0,
             "holdings": {k: 0.0 for k in ASSETS},
             "log": [],
-            # kilitli parametreler
             "income_fixed": float(DEFAULT_MONTHLY_INCOME),
-            # sabit gider artık baz değil; ay ay güncellenen tek değer:
-            "fixed_current": float(START_FIXED_COST),  # Ay1 = 30000
+            "fixed_current": float(START_FIXED_COST),
         }
     p = st.session_state.players[name]
     p.setdefault("month", 1)
@@ -142,8 +140,9 @@ st.caption(
     "Kurallar: (i) Ay 1–3 borç yok: gider+harcama nakit+geliri aşarsa temerrüt. "
     "(ii) Ay 4+ borç var: açık otomatik krediyle kapanır. "
     "(iii) Ay sonunda (Ay 4+) borç geri ödeme seçeneği vardır. "
-    "(iv) Enflasyon sabit gideri artırır (nakitten düşmez). "
-    "(v) Oyun 12. ay sonunda biter."
+    "(iv) Enflasyon sabit gideri artırır. "
+    "(v) Nakit çalınabilir; bankadaki mevduat (dd/td) çalınmaz (oyun varsayımı). "
+    "(vi) Oyun 12. ay sonunda biter."
 )
 
 c1, c2 = st.columns([1, 3])
@@ -152,7 +151,7 @@ with c1:
         st.session_state.clear()
         st.rerun()
 with c2:
-    st.caption("Gelir ve başlangıç sabit gideri standarttır; oyuncular değiştiremez.")
+    st.caption("Gelir ve başlangıç sabit gideri sabittir; oyuncular değiştiremez.")
 
 name = st.text_input("Oyuncu Adı")
 if not name:
@@ -187,6 +186,7 @@ for pname, pp in st.session_state.players.items():
         "Servet(Net)": round(net, 0),
         "Borç": round(debt, 0),
     })
+
 lb = pd.DataFrame(rows).sort_values(["Servet(Net)", "Borç"], ascending=[False, True]).reset_index(drop=True)
 lb["Sıra"] = lb.index + 1
 st.dataframe(lb, use_container_width=True, hide_index=True)
@@ -204,7 +204,7 @@ if p.get("finished", False):
 
     a, b, c, d = st.columns(4)
     a.metric("Nakit", fmt_tl(p["holdings"]["cash"]))
-    b.metric("Yatırım", fmt_tl(total_investments(p)))
+    b.metric("Yatırım (Toplam)", fmt_tl(total_investments(p)))
     c.metric("Borç", fmt_tl(p["debt"]))
     d.metric("Servet (Net)", fmt_tl(net_wealth(p)))
 
@@ -214,8 +214,9 @@ if p.get("finished", False):
         df = pd.DataFrame(p["log"]).copy()
         cols = [
             "Ay","Aşama","EnflasyonOranı",
-            "Gelir(TL)","SabitGider(TL)","EkHarcama(TL)","Tasarruf(TL)",
-            "YatırımaGiden(TL)","BorçÖdeme(TL)",
+            "Gelir(TL)","SabitGider(TL)","EkHarcama(TL)",
+            "Tasarruf(TL)","NakittenEkYatırım(TL)","ToplamYatırımHavuzu(TL)",
+            "YatırımaGiden(TL)","BorçÖdeme(TL)","NakitKaybı(TL)",
             "DönemSonuNakit(TL)","DönemSonuYatırım(TL)","DönemSonuBorç(TL)",
             "ToplamServet(TL)"
         ]
@@ -239,10 +240,6 @@ investable = [k for k in opened if k != "cash"]
 
 income = float(p["income_fixed"])
 infl = inflation_rate_for_month(month)
-
-# Bu ay sabit gider:
-# - Ay1: 30000 (başlangıç)
-# - Ay2+: bir önceki ayın sabit gideri * (1 + o ayın enflasyon oranı)
 fixed_this_month = float(p["fixed_current"])
 
 st.subheader(f"📅 Ay {month} / {CFG['MONTHS']} | Aşama: {stage_label(month)}")
@@ -257,7 +254,7 @@ k3.metric("Bu Ay Sabit Gider", fmt_tl(fixed_this_month))
 
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Nakit", fmt_tl(p["holdings"]["cash"]))
-m2.metric("Yatırım", fmt_tl(total_investments(p)))
+m2.metric("Yatırım (Toplam)", fmt_tl(total_investments(p)))
 m3.metric("Borç", fmt_tl(p["debt"]))
 m4.metric("Servet (Net)", fmt_tl(net_wealth(p)))
 
@@ -282,24 +279,44 @@ st.write(f"Ek harcama: **{fmt_tl(extra)}**")
 st.write(f"Toplam gider: **{fmt_tl(total_exp)}**")
 st.write(f"Tasarruf: **{fmt_tl(saving)}**")
 
+# Bu ay bütçe sonrası nakit (yatırımdan önce) tahmini:
+cash_before_invest = float(p["holdings"]["cash"]) + income - total_exp
+cash_before_invest = max(cash_before_invest, 0.0)  # negatifse ay 1-3 temerrüte gider; ay 4+ krediye gider
+
 if (not can_borrow(month)) and (total_exp > available_without_borrow):
     st.error("Ay 1–3'te borç yok. Bu bütçe nakit+geliri aşıyor → temerrüt olur. Ek harcamayı düşürün.")
 
 # =========================
-# 2) YATIRIM
+# 2) YATIRIM HAVUZU (Tasarruf + Nakitten ek aktarım)
 # =========================
 st.divider()
-st.subheader("2) Yatırım (Tasarrufu Dağıt)")
+st.subheader("2) Yatırım (Tasarrufu + Birikimi Dağıt)")
+
+cash_extra = 0.0
+if investable:
+    st.caption("İsterseniz bu ay sadece tasarrufu değil, mevcut nakit birikiminizin bir kısmını da yatırım araçlarına aktarabilirsiniz.")
+    cash_extra = st.number_input(
+        "Nakitten Ek Yatırım (TL)",
+        min_value=0.0,
+        max_value=float(cash_before_invest),
+        value=0.0,
+        step=1000.0
+    )
+else:
+    st.caption("Bu ay yatırım ürünü yok → tasarruf nakitte kalır.")
+
+invest_pool = float(saving + cash_extra)
+st.write(f"Toplam yatırım havuzu: **{fmt_tl(invest_pool)}** (Tasarruf + Nakitten ek)")
 
 alloc = {}
 alloc_sum = 0.0
 
-if saving <= 0:
-    st.caption("Tasarruf yok → yatırım yok.")
+if invest_pool <= 0:
+    st.caption("Yatırıma ayıracak tutar yok.")
 elif not investable:
-    st.caption("Bu ay yatırım ürünü yok → tasarruf nakitte kalır.")
+    st.caption("Bu ay yatırım ürünü yok → yatırım havuzu nakitte kalır.")
 else:
-    st.caption("Yüzdeleri girin. Toplam 100'ü aşarsa otomatik normalize edilir.")
+    st.caption("Yüzdeleri girin. Toplam 100'ü aşarsa otomatik normalize edilir. Kalan kısım nakitte kalır (ve çalınma riski taşır).")
     for k in investable:
         c1, c2, c3 = st.columns([2.8, 1.2, 0.6])
         with c1:
@@ -343,6 +360,7 @@ if st.button(btn_label):
 
     invested_amount = 0.0
     repay_amt = 0.0
+    cash_theft_loss = 0.0
 
     # 0) Gelir ekle
     p["holdings"]["cash"] += income
@@ -359,15 +377,16 @@ if st.button(btn_label):
             p["finished"] = True
 
             end_cash = float(p["holdings"]["cash"])
-            end_invest = float(sum(v for k, v in p["holdings"].items() if k != "cash"))
+            end_invest = total_investments(p)
             end_debt = float(p["debt"])
             end_total = end_cash + end_invest - end_debt
 
             p["log"].append({
                 "Ay": month, "Aşama": stage_label(month), "EnflasyonOranı": infl,
                 "Gelir(TL)": income, "SabitGider(TL)": fixed_this_month, "EkHarcama(TL)": float(extra),
-                "Tasarruf(TL)": float(saving),
-                "YatırımaGiden(TL)": 0.0, "BorçÖdeme(TL)": 0.0,
+                "Tasarruf(TL)": float(saving), "NakittenEkYatırım(TL)": float(cash_extra),
+                "ToplamYatırımHavuzu(TL)": float(invest_pool),
+                "YatırımaGiden(TL)": 0.0, "BorçÖdeme(TL)": 0.0, "NakitKaybı(TL)": 0.0,
                 "DönemSonuNakit(TL)": end_cash, "DönemSonuYatırım(TL)": end_invest,
                 "DönemSonuBorç(TL)": end_debt, "ToplamServet(TL)": end_total
             })
@@ -376,21 +395,22 @@ if st.button(btn_label):
             p["debt"] += deficit
             p["holdings"]["cash"] = 0.0
 
-    # 2) Yatırım transferi
-    if saving > 0 and investable and alloc_sum > 0:
-        invested_amount = saving if alloc_sum >= 100 else saving * (alloc_sum / 100.0)
+    # 2) Yatırım transferi (yatırım havuzu üzerinden)
+    if invest_pool > 0 and investable and alloc_sum > 0:
+        invested_amount = invest_pool if alloc_sum >= 100 else invest_pool * (alloc_sum / 100.0)
 
         alloc_adj = dict(alloc)
         if alloc_sum > 100:
             alloc_adj = {k: (v / alloc_sum) * 100 for k, v in alloc.items()}
 
         for k, pct in alloc_adj.items():
-            invest_amt = saving * (float(pct) / 100.0)
+            invest_amt = invest_pool * (float(pct) / 100.0)
             if invest_amt <= 0:
                 continue
             p["holdings"][k] += invest_amt
             p["holdings"]["cash"] -= invest_amt
 
+        # yatırım yüzünden nakit negatife düşerse
         if p["holdings"]["cash"] < 0:
             deficit2 = -float(p["holdings"]["cash"])
             if can_borrow(month):
@@ -402,12 +422,13 @@ if st.button(btn_label):
                 p["finished"] = True
                 st.rerun()
 
-    # 3) Kurum yokken nakit kayıp riski
-    if month <= 3 and p["holdings"]["cash"] > 0:
-        if rng.random() < CFG["CASH_LOSS_PROB"]:
-            p["holdings"]["cash"] -= p["holdings"]["cash"] * CFG["CASH_LOSS_SEV"]
+    # 3) NAKİT ÇALINMA RİSKİ (her ay, sadece cash üzerinde)
+    theft_prob = CFG["CASH_THEFT_PROB_STAGE1"] if month <= 3 else CFG["CASH_THEFT_PROB_STAGE2"]
+    if p["holdings"]["cash"] > 0 and rng.random() < theft_prob:
+        cash_theft_loss = float(p["holdings"]["cash"]) * float(CFG["CASH_THEFT_SEV"])
+        p["holdings"]["cash"] -= cash_theft_loss
 
-    # 4) Getiriler
+    # 4) Getiriler (mevduat + riskli varlıklar)
     if "dd" in opened:
         p["holdings"]["dd"] *= (1.0 + CFG["DD_RATE"])
     if "td" in opened:
@@ -452,7 +473,7 @@ if st.button(btn_label):
 
     # 7) Dönem sonu
     end_cash = float(p["holdings"]["cash"])
-    end_invest = float(sum(v for k, v in p["holdings"].items() if k != "cash"))
+    end_invest = total_investments(p)
     end_debt = float(p["debt"])
     end_total = end_cash + end_invest - end_debt
 
@@ -465,15 +486,18 @@ if st.button(btn_label):
         "SabitGider(TL)": fixed_this_month,
         "EkHarcama(TL)": float(extra),
         "Tasarruf(TL)": float(saving),
+        "NakittenEkYatırım(TL)": float(cash_extra),
+        "ToplamYatırımHavuzu(TL)": float(invest_pool),
         "YatırımaGiden(TL)": float(invested_amount),
         "BorçÖdeme(TL)": float(repay_amt),
+        "NakitKaybı(TL)": float(cash_theft_loss),
         "DönemSonuNakit(TL)": end_cash,
         "DönemSonuYatırım(TL)": end_invest,
         "DönemSonuBorç(TL)": end_debt,
         "ToplamServet(TL)": end_total,
     })
 
-    # 9) 🔥 Sabit gideri bir sonraki ay için güncelle (bileşik artış)
+    # 9) Sabit gideri bir sonraki aya taşı (bileşik artış)
     if month < CFG["MONTHS"]:
         next_month = month + 1
         next_infl = inflation_rate_for_month(next_month)
@@ -484,6 +508,11 @@ if st.button(btn_label):
         p["finished"] = True
     else:
         p["month"] += 1
+
+    # 11) Bu ay nakit çalındıysa kullanıcıya hissettirelim
+    if cash_theft_loss > 0:
+        st.warning(f"🔐 Nakit hırsızlığı gerçekleşti! Bu ay **{fmt_tl(cash_theft_loss)}** kaybettiniz. "
+                   f"Bankadaki mevduat (dd/td) bu riskten etkilenmez (oyun varsayımı).")
 
     st.rerun()
 
@@ -496,8 +525,9 @@ if p["log"]:
     df = pd.DataFrame(p["log"]).copy()
     cols = [
         "Ay","Aşama","EnflasyonOranı",
-        "Gelir(TL)","SabitGider(TL)","EkHarcama(TL)","Tasarruf(TL)",
-        "YatırımaGiden(TL)","BorçÖdeme(TL)",
+        "Gelir(TL)","SabitGider(TL)","EkHarcama(TL)",
+        "Tasarruf(TL)","NakittenEkYatırım(TL)","ToplamYatırımHavuzu(TL)",
+        "YatırımaGiden(TL)","BorçÖdeme(TL)","NakitKaybı(TL)",
         "DönemSonuNakit(TL)","DönemSonuYatırım(TL)","DönemSonuBorç(TL)",
         "ToplamServet(TL)"
     ]
