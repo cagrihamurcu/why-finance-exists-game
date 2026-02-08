@@ -26,7 +26,7 @@ CFG = {
 
     "LOAN_ACTIVE_FROM_MONTH": 4,
 
-    # Nakit hırsızlığı
+    # Nakit hırsızlığı (ek sürpriz olasılıkları - garantili 3 defa bunun üstüne gelebilir)
     "CASH_THEFT_PROB_STAGE1": 0.12,
     "CASH_THEFT_PROB_STAGE2": 0.05,
     "CASH_THEFT_SEV_MIN": 0.10,
@@ -244,6 +244,12 @@ if "theft_banner" not in st.session_state:
 
 def get_player(name: str) -> dict:
     if name not in st.session_state.players:
+        # ✅ EN AZ 3 HIRSIZLIK GARANTİSİ: oyuncu bazlı 3 ay önceden seçilir (tekrarsız)
+        theft_rng = np.random.default_rng((hash(name) % 10000) + st.session_state.seed)
+        theft_months = sorted(
+            theft_rng.choice(np.arange(1, CFG["MONTHS"] + 1), size=3, replace=False).tolist()
+        )
+
         st.session_state.players[name] = {
             "month": 1,
             "finished": False,
@@ -264,6 +270,8 @@ def get_player(name: str) -> dict:
 
             "last_dd_bank": None,
             "last_td_bank": None,
+
+            "theft_months": theft_months,  # ✅ en az 3 kez
 
             "log": [],
         }
@@ -326,7 +334,8 @@ with c2:
     st.caption(
         "Kurgu: Gelir sabit, giderler enflasyonla artar. Nakit risklidir (hırsızlık). "
         "Bankalar/piyasalar geldikçe seçenekler artar ama komisyon/spread/ceza ve kredi faizi gibi maliyetler vardır. "
-        "Enflasyon her ay +/-%1 ile %5 arası değişebilir."
+        "Enflasyon her ay +/-%1 ile %5 arası değişebilir. "
+        "✅ Bu oyunda her oyuncu için 12 ay içinde NAKİT üzerinden EN AZ 3 kez hırsızlık garantidir."
     )
 
 name = st.text_input("Oyuncu Adı")
@@ -409,6 +418,9 @@ m5.metric("Borç", fmt_tl(p["debt"]))
 m6.metric("Servet (Net)", fmt_tl(net_wealth(p)))
 if float(p.get("debt", 0.0)) > 0:
     st.caption(f"Borç faizi (ağırlıklı ortalama): {fmt_pct(float(p.get('debt_rate', 0.0)))} / ay")
+
+# (İstersen debug için aç: garantili ayları görmek)
+# st.caption(f"🔎 (Debug) Garantili hırsızlık ayları: {p.get('theft_months')}")
 
 with st.expander("🏦 Mevduat Dökümü (Banka Bazında)", expanded=False):
     cA, cB = st.columns(2)
@@ -618,7 +630,7 @@ if total_buy > max_buy + 1e-9:
     st.error("Toplam alış, bu ay yatırım için kullanılabilir MAX nakdi aşıyor. Tutarları düşürün.")
 
 # =========================
-# 3) BORÇ ÖDEME (Ay Sonu) ✅ max ödeyebileceği tutarı yaz
+# 3) BORÇ ÖDEME (Ay Sonu)
 # =========================
 st.divider()
 st.subheader("3) Borç Ödeme (Ay Sonu)")
@@ -782,9 +794,19 @@ if st.button(btn_label):
             spread_cost_total += spr_part
             p["holdings"][k] += max(net, 0.0)
 
-    # F) NAKİT HIRSIZLIK  ✅ sadece nakitten düşer + banner bir sonraki render'da 10 sn görünür
-    prob = CFG["CASH_THEFT_PROB_STAGE1"] if month <= 3 else CFG["CASH_THEFT_PROB_STAGE2"]
-    if p["holdings"]["cash"] > 0 and rng.random() < prob:
+    # F) NAKİT HIRSIZLIK ✅ 12 ay içinde EN AZ 3 KEZ GARANTİLİ + (istersen) ekstra sürpriz
+    theft_trigger = False
+
+    # 1) Garantili 3 ay
+    if month in p.get("theft_months", []) and float(p["holdings"]["cash"]) > 0:
+        theft_trigger = True
+    else:
+        # 2) Ekstra sürpriz (olasılık)
+        prob = CFG["CASH_THEFT_PROB_STAGE1"] if month <= 3 else CFG["CASH_THEFT_PROB_STAGE2"]
+        if float(p["holdings"]["cash"]) > 0 and rng.random() < prob:
+            theft_trigger = True
+
+    if theft_trigger and float(p["holdings"]["cash"]) > 0:
         sev = float(rng.uniform(CFG["CASH_THEFT_SEV_MIN"], CFG["CASH_THEFT_SEV_MAX"]))
         theft_loss = float(p["holdings"]["cash"]) * sev
         p["holdings"]["cash"] -= theft_loss
