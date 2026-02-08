@@ -4,19 +4,28 @@ import pandas as pd
 
 st.set_page_config(page_title="Borsa Uygulamaları - 1. Hafta Oyunu", layout="wide")
 
+# =========================
+# SABİT (ÖĞRENCİ DEĞİŞTİREMEZ)
+# =========================
 DEFAULT_MONTHLY_INCOME = 60000
 START_FIXED_COST = 30000
+START_EXTRA_COST = 5000  # ✅ Ek harcama sabit başlar (oyuncu giremez/değiştiremez)
 
+# =========================
+# OYUN PARAMETRELERİ
+# =========================
 CFG = {
     "MONTHS": 12,
 
+    # Fiyatlar Genel Düzeyi (FGD) – Ay bazlı değişim adımı (%1-%5 arası, +/-)
     "PGL_MIN_STEP": 0.01,
     "PGL_MAX_STEP": 0.05,
-    "PGL_FLOOR": 0.01,
+    "PGL_FLOOR": 0.01,  # ekranda gösterilen FGD seviyesi bandı (%1-%5)
     "PGL_CAP": 0.05,
 
     "LOAN_ACTIVE_FROM_MONTH": 4,
 
+    # Nakit hırsızlığı
     "CASH_THEFT_PROB_STAGE1": 0.12,
     "CASH_THEFT_PROB_STAGE2": 0.05,
     "CASH_THEFT_SEV_MIN": 0.10,
@@ -24,27 +33,32 @@ CFG = {
 
     "BANK_INCIDENT_PROB": 0.02,
 
+    # Banka faiz/güvence
     "TD_RATE_MIN": 0.0070,
     "TD_RATE_MAX": 0.0140,
-
     "GUAR_MIN": 0.70,
     "GUAR_MAX": 0.99,
 
+    # Kredi faizi
     "LOAN_RATE_BASE": 0.018,
     "LOAN_RATE_ADD": 0.030,
     "LOAN_RATE_NOISE": 0.002,
     "LOAN_MAX_MULT_INCOME": 3.0,
 
+    # Vadeli bozma cezası / işlem komisyonu
     "EARLY_BREAK_PENALTY": 0.01,
     "TX_FEE": 0.005,
 
+    # Spread
     "SPREAD": {"fx": 0.010, "pm": 0.012, "eq": 0.020, "cr": 0.050},
 
+    # Riskli varlık getirileri (aylık)
     "EQ_MU": 0.015, "EQ_SIG": 0.060,
     "CR_MU": 0.020, "CR_SIG": 0.120,
     "PM_MU": 0.008, "PM_SIG": 0.030,
     "FX_MU": 0.010, "FX_SIG": 0.040,
 
+    # Kriz ayı
     "CRISIS_MONTH": 6,
     "CRISIS_EQ": -0.12,
     "CRISIS_CR": -0.20,
@@ -65,6 +79,9 @@ ASSETS = {
 RISK_ASSETS = ["fx", "pm", "eq", "cr"]
 DEPOSIT_ASSETS = ["dd", "td"]
 
+# =========================
+# YARDIMCI
+# =========================
 def fmt_tl(x: float) -> str:
     return f"{x:,.0f} TL".replace(",", ".")
 
@@ -105,7 +122,7 @@ def next_pgl(prev_pgl: float, rng: np.random.Generator):
 
     new_pgl = float(prev_pgl + signed_delta)
     new_pgl = float(np.clip(new_pgl, CFG["PGL_FLOOR"], CFG["PGL_CAP"]))
-    realized_delta = float(new_pgl - prev_pgl)
+    realized_delta = float(new_pgl - prev_pgl)  # ✅ giderlere uygulanacak +/- değişim
     return new_pgl, realized_delta
 
 def bank_count_for_month(month: int) -> int:
@@ -275,6 +292,7 @@ def get_player(name: str) -> dict:
 
             "income_fixed": float(DEFAULT_MONTHLY_INCOME),
             "fixed_current": float(START_FIXED_COST),
+            "extra_current": float(START_EXTRA_COST),  # ✅ Ek harcama: sabit ama FGD değişiminden etkilenir
             "pgl_current": float(pgl0),
 
             "last_dd_bank": None,
@@ -293,7 +311,7 @@ with st.sidebar:
     st.write(
         "- **Gelir sabittir.**\n"
         "- **Fiyatlar Genel Düzeyi** her ay bir **değişim** (artış/azalış) gösterir.\n"
-        "- **Sabit giderler**, bu değişime göre **bir sonraki ay** artar ya da azalır.\n"
+        "- **Sabit giderler** ve **ek harcama**, bu değişime göre **bir sonraki ay** artar ya da azalır.\n"
         "- **4. aydan itibaren** finansal kurumlar devreye girer."
     )
     st.divider()
@@ -304,7 +322,7 @@ with st.sidebar:
 st.title("🎮 1. Hafta Oyunu: Neden Finansal Piyasalar ve Kurumlarla İlgileniyoruz?")
 
 # =========================
-# POP-UP RENDER
+# POP-UP RENDER (Modal)
 # =========================
 def _overlay_style():
     st.markdown(
@@ -395,15 +413,17 @@ def render_pgl_modal():
     step_used = float(pop.get("step_used", 0.0))
     fixed_prev = float(pop.get("fixed_prev", 0.0))
     fixed_new = float(pop.get("fixed_new", 0.0))
+    extra_prev = float(pop.get("extra_prev", 0.0))
+    extra_new = float(pop.get("extra_new", 0.0))
 
     if step_used > 0:
-        msg = "Bu ay **artış adımı (+)** uygulandı → bir sonraki ay sabit giderler **arttı**."
+        msg = "Bu ay **artış (+)** oldu → bir sonraki ay giderler **arttı**."
         arrow = "⬆️"
     elif step_used < 0:
-        msg = "Bu ay **azalış adımı (−)** uygulandı → bir sonraki ay sabit giderler **azaldı**."
+        msg = "Bu ay **azalış (−)** oldu → bir sonraki ay giderler **azaldı**."
         arrow = "⬇️"
     else:
-        msg = "Band sınırına çarptığı için bu ay adım **0** olarak gerçekleşti."
+        msg = "Band sınırına çarptığı için bu ay değişim **0** gerçekleşti."
         arrow = "➡️"
     step_text = f"{arrow} {fmt_pct(abs(step_used))}"
 
@@ -417,7 +437,9 @@ def render_pgl_modal():
 
                 **Fiyatlar Genel Düzeyi:** {fmt_pct(pgl_prev)} → **{fmt_pct(pgl_new)}**  
                 **Bu Ay Değişim:** **{step_text}**  
-                **Sabit Gider:** {fmt_tl(fixed_prev)} → **{fmt_tl(fixed_new)}**
+
+                **Sabit Gider:** {fmt_tl(fixed_prev)} → **{fmt_tl(fixed_new)}**  
+                **Ek Harcama:** {fmt_tl(extra_prev)} → **{fmt_tl(extra_new)}**
 
                 {msg}
                 """
@@ -434,9 +456,10 @@ def render_pgl_modal():
               <div class="card" style="border:4px solid #0b4aa2;background:#f3f8ff;">
                 <div class="titleBlue">📌 Fiyatlar Genel Düzeyi Güncellendi</div>
                 <div><b>Oyuncu:</b> {player} &nbsp; | &nbsp; <b>Geçiş:</b> Ay {from_month} → Ay {to_month}</div>
-                <div style="margin-top:10px;"><b>Fiyatlar Genel Düzeyi:</b> {fmt_pct(pgl_prev)} → <b>{fmt_pct(pgl_new)}</b></div>
+                <div style="margin-top:10px;"><b>FGD:</b> {fmt_pct(pgl_prev)} → <b>{fmt_pct(pgl_new)}</b></div>
                 <div><b>Bu Ay Değişim:</b> <b>{step_text}</b></div>
-                <div><b>Sabit Gider:</b> {fmt_tl(fixed_prev)} → <b>{fmt_tl(fixed_new)}</b></div>
+                <div style="margin-top:10px;"><b>Sabit Gider:</b> {fmt_tl(fixed_prev)} → <b>{fmt_tl(fixed_new)}</b></div>
+                <div><b>Ek Harcama:</b> {fmt_tl(extra_prev)} → <b>{fmt_tl(extra_new)}</b></div>
                 <div style="margin-top:10px;">{msg}</div>
               </div>
             </div>
@@ -467,9 +490,9 @@ def render_loan_modal():
                 **Oyuncu:** {player}  
                 **Alındığı ay:** {m}
 
-                **Alınan borç (anapara):** **{fmt_tl(principal)}**  
+                **Anapara:** **{fmt_tl(principal)}**  
                 **Faiz (1 ay):** **{rate*100:.2f}%**  
-                **Gelecek ay ödenecek tutar:** **{fmt_tl(due)}**
+                **Gelecek ay ödenecek:** **{fmt_tl(due)}**
 
                 **{msg}**
                 """
@@ -485,9 +508,9 @@ def render_loan_modal():
             <div class="ovl">
               <div class="card" style="border:4px solid #9a4b00;background:#fff7ee;">
                 <div class="titleOrange">⚠️ Borç Uyarısı</div>
-                <div><b>Oyuncu:</b> {player} &nbsp; | &nbsp; <b>Alındığı Ay:</b> {m}</div>
+                <div><b>Oyuncu:</b> {player} &nbsp; | &nbsp; <b>Ay:</b> {m}</div>
                 <div style="margin-top:10px;"><b>Anapara:</b> <b>{fmt_tl(principal)}</b></div>
-                <div><b>Faiz (1 ay):</b> <b>{rate*100:.2f}%</b></div>
+                <div><b>Faiz:</b> <b>{rate*100:.2f}%</b></div>
                 <div><b>Gelecek ay ödenecek:</b> <b>{fmt_tl(due)}</b></div>
                 <div style="margin-top:10px;font-weight:900;">{msg}</div>
               </div>
@@ -537,11 +560,11 @@ if p.get("finished", False):
 income = float(p["income_fixed"])
 pgl = float(p["pgl_current"])
 fixed_this_month = float(p["fixed_current"])
+extra_this_month = float(p["extra_current"])  # ✅ otomatik
+due_this_month = float(loan_due_amount(p, month))
 
 st.markdown(f"### 📅 Ay {month}/{CFG['MONTHS']}  —  Aşama: **{stage_label(month)}**")
 st.progress((month - 1) / CFG["MONTHS"])
-
-due_this_month = float(loan_due_amount(p, month))
 
 r1a, r1b, r1c, r1d = st.columns(4)
 r1a.metric("Net Servet", fmt_tl(net_wealth(p)))
@@ -551,9 +574,15 @@ r1d.metric("Borç (Vade+Anapara)", fmt_tl(total_debt_display(p, month)))
 
 r2a, r2b, r2c, r2d = st.columns(4)
 r2a.metric("Fiyatlar Genel Düzeyi (Bu Ay)", fmt_pct(pgl))
-r2b.metric("Bu Ay Sabit Gider", fmt_tl(fixed_this_month))
-r2c.metric("Gelir (Sabit)", fmt_tl(income))
-r2d.metric("Finansal Kurumlar", "Açık (Ay4+)" if can_borrow(month) else "Kapalı (Ay1-3)")
+r2b.metric("Sabit Gider (Bu Ay)", fmt_tl(fixed_this_month))
+r2c.metric("Ek Harcama (Bu Ay)", fmt_tl(extra_this_month))
+r2d.metric("Gelir (Sabit)", fmt_tl(income))
+
+r3a, r3b, r3c, r3d = st.columns(4)
+r3a.metric("Finansal Kurumlar", "Açık (Ay4+)" if can_borrow(month) else "Kapalı (Ay1-3)")
+r3b.metric("Vadesiz Toplam", fmt_tl(dd_total(p)))
+r3c.metric("Vadeli Toplam", fmt_tl(td_total(p)))
+r3d.metric("Diğer Yatırımlar", fmt_tl(other_investments_total(p)))
 
 if due_this_month > 0:
     st.warning(f"⚠️ Bu ay vadesi gelen 1 aylık borç ödemesi var: **{fmt_tl(due_this_month)}** (Ay sonunda ödenir)")
@@ -609,7 +638,7 @@ with tab_log:
                     with col:
                         for k, v in pairs:
                             if isinstance(v, (int, float)):
-                                if "Fiyatlar" in str(k) or "Oran" in str(k):
+                                if "Fiyatlar" in str(k) or "Duzeyi" in str(k):
                                     st.markdown(f"**{k}:** {fmt_pct(float(v))}")
                                 else:
                                     st.markdown(f"**{k}:** {fmt_tl(float(v))}")
@@ -698,17 +727,17 @@ with tab_game:
     st.info(f"Satış/bozma ile tahmini net nakit girişi: **{fmt_tl(projected_sell_cash_in)}**")
     st.divider()
 
-    # 1) BÜTÇE
+    # 1) BÜTÇE (Ek harcama artık otomatik)
     st.markdown("#### 1) Bütçe (Bu Ay)")
-    available_without_borrow = float(p["holdings"]["cash"]) + projected_sell_cash_in + income
-    extra_max = int(max(0.0, available_without_borrow - fixed_this_month)) if not can_borrow(month) else int(income * 3)
-    extra_default = min(5000, max(0, extra_max))
-    extra = st.number_input("Ek Harcama", 0, max(0, extra_max), extra_default, 1000, key=f"extra_{name}_{month}")
-
-    total_exp = fixed_this_month + float(extra)
+    st.caption("Ek harcama sabittir ve oyuncu tarafından değiştirilemez. FGD değişiminden etkilenir.")
+    total_exp = float(fixed_this_month) + float(extra_this_month)
+    st.write(f"Sabit gider: **{fmt_tl(fixed_this_month)}**")
+    st.write(f"Ek harcama: **{fmt_tl(extra_this_month)}**")
     st.write(f"Toplam gider: **{fmt_tl(total_exp)}**")
+
+    available_without_borrow = float(p["holdings"]["cash"]) + projected_sell_cash_in + income
     if (not can_borrow(month)) and (total_exp > available_without_borrow):
-        st.error("Ay 1–3'te borç yok. Bu bütçe (nakit+gelir) sınırını aşıyor → temerrüt olur.")
+        st.error("Ay 1–3'te borç yok. Bu ay giderler (nakit+gelir) sınırını aşıyor → temerrüt olur.")
     st.divider()
 
     # 2) BORÇ AL
@@ -739,10 +768,9 @@ with tab_game:
     due_now = float(loan_due_amount(p, month))
     if due_now <= 0:
         st.caption("Bu ay vadesi gelen borç yok.")
-        repay_amt_input = 0.0
     else:
         st.caption(f"Bu ay vadesi gelen toplam ödeme: **{fmt_tl(due_now)}** (anapara + 1 aylık faiz)")
-        repay_amt_input = st.number_input(
+        st.number_input(
             "Bu ay ödemek zorunda olduğunuz tutar (TL)",
             min_value=0.0,
             max_value=float(due_now),
@@ -1030,7 +1058,7 @@ with tab_game:
             "FiyatlarGenelDuzeyi": float(pgl),
             "Gelir(TL)": float(income),
             "SabitGider(TL)": float(fixed_this_month),
-            "EkHarcama(TL)": float(extra),
+            "EkHarcama(TL)": float(extra_this_month),
             "SatışNetNakitGirişi(TL)": float(projected_sell_cash_in),
             "YeniBorç(1ay)(TL)": float(new_borrow_taken),
             "VadesiGelenBorçÖdeme(TL)": float(repay_done),
@@ -1047,15 +1075,23 @@ with tab_game:
             "ToplamServet(TL)": float(end_total),
         })
 
-        # K) PGL update
+        # K) PGL update (✅ sabit gider + ek harcama ikisi de etkilenir)
         if month < CFG["MONTHS"]:
             next_rng = rng_for_player(name, month + 1)
+
             pgl_prev = float(p["pgl_current"])
             fixed_prev = float(p["fixed_current"])
+            extra_prev = float(p["extra_current"])
+
             pgl_next, realized_delta = next_pgl(pgl_prev, next_rng)
+
             fixed_next = float(max(0.0, fixed_prev * (1.0 + realized_delta)))
+            extra_next = float(max(0.0, extra_prev * (1.0 + realized_delta)))  # ✅ sıfır altına düşmez
+
             p["pgl_current"] = float(pgl_next)
             p["fixed_current"] = float(fixed_next)
+            p["extra_current"] = float(extra_next)
+
             st.session_state.pgl_popup = {
                 "player": str(name),
                 "from_month": int(month),
@@ -1065,6 +1101,8 @@ with tab_game:
                 "step_used": float(realized_delta),
                 "fixed_prev": float(fixed_prev),
                 "fixed_new": float(fixed_next),
+                "extra_prev": float(extra_prev),
+                "extra_new": float(extra_next),
             }
 
         # L) ay ilerlet
