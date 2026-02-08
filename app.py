@@ -782,7 +782,7 @@ if st.button(btn_label):
             spread_cost_total += spr_part
             p["holdings"][k] += max(net, 0.0)
 
-    # F) NAKİT HIRSIZLIK (banner üstte tek sefer çıkacak)
+    # F) NAKİT HIRSIZLIK  ✅ sadece nakitten düşer + banner bir sonraki render'da 10 sn görünür
     prob = CFG["CASH_THEFT_PROB_STAGE1"] if month <= 3 else CFG["CASH_THEFT_PROB_STAGE2"]
     if p["holdings"]["cash"] > 0 and rng.random() < prob:
         sev = float(rng.uniform(CFG["CASH_THEFT_SEV_MIN"], CFG["CASH_THEFT_SEV_MAX"]))
