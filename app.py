@@ -25,13 +25,13 @@ CFG = {
 
     "LOAN_ACTIVE_FROM_MONTH": 4,
 
-    # Nakit hırsızlığı (UNUTULMADI ✅)
+    # Nakit hırsızlığı
     "CASH_THEFT_PROB_STAGE1": 0.12,
     "CASH_THEFT_PROB_STAGE2": 0.05,
     "CASH_THEFT_SEV_MIN": 0.10,
     "CASH_THEFT_SEV_MAX": 0.35,
 
-    # Banka olayı
+    # Banka olayı (banka güvence oranına göre kısmi kayıp)
     "BANK_INCIDENT_PROB": 0.02,
 
     # Vadeli faiz aralığı (aylık)
@@ -42,11 +42,11 @@ CFG = {
     "GUAR_MIN": 0.70,
     "GUAR_MAX": 0.99,
 
-    # Banka kredi faizi (aylık) - bankaya göre türetilecek (güvence yüksekse faiz düşük)
-    "LOAN_RATE_BASE": 0.018,     # taban
-    "LOAN_RATE_ADD": 0.030,      # güvencesizliğe göre ek
-    "LOAN_RATE_NOISE": 0.002,    # küçük oynaklık
-    "LOAN_MAX_MULT_INCOME": 3.0, # oyuncu isteğe bağlı borçlanma tavanı = gelir * çarpan
+    # Banka kredi faizi (aylık) - güvence düşükse faiz daha yüksek (trade-off)
+    "LOAN_RATE_BASE": 0.018,
+    "LOAN_RATE_ADD": 0.030,
+    "LOAN_RATE_NOISE": 0.002,
+    "LOAN_MAX_MULT_INCOME": 3.0,
 
     # Vadeli bozma cezası
     "EARLY_BREAK_PENALTY": 0.01,
@@ -117,6 +117,12 @@ def rng_for_global(month: int):
 def rng_for_player(name: str, month: int):
     return np.random.default_rng((hash(name) % 10000) + month * 1000 + st.session_state.seed)
 
+def next_inflation(prev_infl: float, rng: np.random.Generator) -> float:
+    step = float(rng.uniform(CFG["INFL_MIN_STEP"], CFG["INFL_MAX_STEP"]))
+    sign = -1.0 if rng.random() < 0.5 else 1.0
+    new_infl = float(prev_infl + sign * step)
+    return float(np.clip(new_infl, CFG["INFL_FLOOR"], CFG["INFL_CAP"]))
+
 def bank_count_for_month(month: int) -> int:
     if month < 4:
         return 0
@@ -127,10 +133,9 @@ def banks_for_month(month: int):
     if n == 0:
         return []
     r = rng_for_global(month)
-
     td_rates = r.uniform(CFG["TD_RATE_MIN"], CFG["TD_RATE_MAX"], size=n)
 
-    # yüksek vadeli faiz -> ortalamada daha düşük güvence (trade-off)
+    # yüksek faiz -> daha düşük güvence (trade-off)
     order = np.argsort(td_rates)  # düşük->yüksek faiz
     banks = [None] * n
     for rank, idx in enumerate(order):
@@ -140,7 +145,6 @@ def banks_for_month(month: int):
         noise = float(r.normal(0, 0.015))
         guarantee = float(np.clip(base_guar + noise, CFG["GUAR_MIN"], CFG["GUAR_MAX"]))
 
-        # kredi faizi: güvence yüksekse daha düşük (trade-off)
         loan_noise = float(r.normal(0, CFG["LOAN_RATE_NOISE"]))
         loan_rate = float(np.clip(
             CFG["LOAN_RATE_BASE"] + (1.0 - guarantee) * CFG["LOAN_RATE_ADD"] + loan_noise,
@@ -227,13 +231,6 @@ def update_weighted_debt_rate(p: dict, add_debt: float, add_rate: float):
     else:
         p["debt_rate"] = float((old_debt * old_rate + add_debt * add_rate) / new_debt)
 
-def next_inflation(prev_infl: float, rng: np.random.Generator) -> float:
-    """Bir sonraki ay enflasyon: +/-%1 ile %5 arası değişim."""
-    step = float(rng.uniform(CFG["INFL_MIN_STEP"], CFG["INFL_MAX_STEP"]))
-    sign = -1.0 if rng.random() < 0.5 else 1.0
-    new_infl = float(prev_infl + sign * step)
-    return float(np.clip(new_infl, CFG["INFL_FLOOR"], CFG["INFL_CAP"]))
-
 # =========================
 # SESSION STATE
 # =========================
@@ -251,24 +248,19 @@ def get_player(name: str) -> dict:
             "finished": False,
             "defaulted": False,
 
-            # borç
             "debt": 0.0,
             "debt_rate": 0.0,
             "loan_bank": None,
 
-            # varlıklar
             "holdings": {"cash": 0.0, "fx": 0.0, "pm": 0.0, "eq": 0.0, "cr": 0.0},
             "dd_accounts": {},
             "td_accounts": {},
 
-            # sabitler
             "income_fixed": float(DEFAULT_MONTHLY_INCOME),
             "fixed_current": float(START_FIXED_COST),
 
-            # enflasyon (dinamik)
             "infl_current": float(CFG["INFL_START"]),
 
-            # banka seçimleri
             "last_dd_bank": None,
             "last_td_bank": None,
 
@@ -281,7 +273,7 @@ def get_player(name: str) -> dict:
 # =========================
 st.title("🎮 1. Hafta Oyunu: Neden Finansal Piyasalar ve Kurumlarla İlgileniyoruz?")
 
-# Hırsızlık banner'ı (UNUTULMADI ✅)
+# Hırsızlık banner'ı
 if st.session_state.theft_banner:
     loss = st.session_state.theft_banner["loss"]
     remain = st.session_state.theft_banner["remain"]
@@ -313,7 +305,7 @@ with c2:
     st.caption(
         "Kurgu: Gelir sabit, giderler enflasyonla artar. Nakit risklidir (hırsızlık). "
         "Bankalar/piyasalar geldikçe seçenekler artar ama komisyon/spread/ceza ve kredi faizi gibi maliyetler vardır. "
-        "Enflasyon her ay +/-%1 ile %5 arası değişebilir (artış/azalış)."
+        "Enflasyon her ay +/-%1 ile %5 arası değişebilir."
     )
 
 name = st.text_input("Oyuncu Adı")
@@ -341,6 +333,7 @@ for pname, pp in st.session_state.players.items():
         status = "Bitti"
     month_done = CFG["MONTHS"] if pp.get("finished") else max(int(pp.get("month", 1)) - 1, 0)
     rows.append({"Sıra": 0, "Oyuncu": pname, "Durum": status, "Ay": month_done, "Servet(Net)": round(net, 0), "Borç": round(debt, 0)})
+
 lb = pd.DataFrame(rows).sort_values(["Servet(Net)", "Borç"], ascending=[False, True]).reset_index(drop=True)
 lb["Sıra"] = lb.index + 1
 st.dataframe(lb, use_container_width=True, hide_index=True, height=220)
@@ -592,16 +585,30 @@ if total_buy > max_buy + 1e-9:
     st.error("Toplam alış, bu ay yatırım için kullanılabilir MAX nakdi aşıyor. Tutarları düşürün.")
 
 # =========================
-# 3) BORÇ ÖDEME (TUTAR)
+# 3) BORÇ ÖDEME (TUTAR)  ✅ MAX ÖDEME GÖSTERİLİR
 # =========================
 st.divider()
 st.subheader("3) Borç Ödeme (Ay Sonu)")
 
 repay_amt_input = 0.0
 if can_borrow(month) and float(p["debt"]) > 0:
-    st.caption(f"Mevcut borç: **{fmt_tl(float(p['debt']))}** | Ortalama faiz: **{fmt_pct(float(p.get('debt_rate', 0.0)))} / ay**")
-    repay_max_preview = float(p["holdings"]["cash"])
-    repay_amt_input = safe_number_input("Bu ay borca ödemek istediğiniz tutar (TL)", f"repay_amt_{name}_{month}", repay_max_preview, 1000.0)
+    current_cash = float(p["holdings"]["cash"])
+    current_debt = float(p["debt"])
+    max_payable = float(max(0.0, min(current_cash, current_debt)))
+
+    st.caption(
+        f"Mevcut borç: **{fmt_tl(current_debt)}** | "
+        f"Ödeme için kullanılabilir nakit: **{fmt_tl(current_cash)}** | "
+        f"**Bu ay ödeyebileceğiniz maksimum:** **{fmt_tl(max_payable)}**"
+    )
+    st.caption(f"Borç faizi (ağırlıklı ortalama): **{fmt_pct(float(p.get('debt_rate', 0.0)))} / ay**")
+
+    repay_amt_input = safe_number_input(
+        "Bu ay borca ödemek istediğiniz tutar (TL)",
+        f"repay_amt_{name}_{month}",
+        max_payable,
+        1000.0
+    )
 else:
     st.caption("Bu ay borç yok veya borç mekanizması aktif değil.")
 
@@ -632,8 +639,10 @@ if st.button(btn_label):
         fee_part = amt * float(CFG["TX_FEE"])
         spr_part = amt * (float(CFG["SPREAD"].get(k, 0.0)) / 2.0)
         net_cash = amt * (1.0 - rate)
+
         p["holdings"][k] -= amt
         p["holdings"]["cash"] += max(net_cash, 0.0)
+
         tx_fee_total += fee_part
         spread_cost_total += spr_part
 
@@ -740,7 +749,7 @@ if st.button(btn_label):
             spread_cost_total += spr_part
             p["holdings"][k] += max(net, 0.0)
 
-    # F) NAKİT HIRSIZLIK (UNUTULMADI ✅)
+    # F) NAKİT HIRSIZLIK
     prob = CFG["CASH_THEFT_PROB_STAGE1"] if month <= 3 else CFG["CASH_THEFT_PROB_STAGE2"]
     if p["holdings"]["cash"] > 0 and rng.random() < prob:
         sev = float(rng.uniform(CFG["CASH_THEFT_SEV_MIN"], CFG["CASH_THEFT_SEV_MAX"]))
