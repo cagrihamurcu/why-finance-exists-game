@@ -265,14 +265,12 @@ def get_player(name: str) -> dict:
 
             "income_fixed": float(DEFAULT_MONTHLY_INCOME),
             "fixed_current": float(START_FIXED_COST),
-
             "infl_current": float(CFG["INFL_START"]),
 
             "last_dd_bank": None,
             "last_td_bank": None,
 
-            "theft_months": theft_months,  # ✅ en az 3 kez
-
+            "theft_months": theft_months,
             "log": [],
         }
     return st.session_state.players[name]
@@ -282,35 +280,29 @@ def get_player(name: str) -> dict:
 # =========================
 st.title("🎮 1. Hafta Oyunu: Neden Finansal Piyasalar ve Kurumlarla İlgileniyoruz?")
 
-# ✅ Hırsızlık banner'ı: tek sefer göster + 10 sn sonra JS ile kaybol + uyarı sesi
+# ✅ HIRSIZLIK: KIRMIZI UYARI + 10 sn sonra kaybolur (tek seferlik)
 if st.session_state.get("theft_banner"):
     loss = float(st.session_state.theft_banner["loss"])
     remain = float(st.session_state.theft_banner["remain"])
-    banner_id = f"theft_banner_{st.session_state.get('seed', 0)}_{np.random.randint(1_000_000)}"
-
-    # kısa beep (data URI)
-    beep_wav_base64 = "UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA="
+    banner_id = f"theft_red_{st.session_state.get('seed', 0)}_{np.random.randint(1_000_000)}"
 
     components.html(
         f"""
         <div id="{banner_id}" style="
-            padding:18px;border-radius:16px;border:4px solid #8b0000;
-            background:linear-gradient(90deg,#ffe6e6,#fff1f1);
-            font-size:22px;line-height:1.5;margin:8px 0 14px 0;">
-            <div style="font-size:28px;font-weight:800;margin-bottom:6px;">
-                🚨🚨🚨 NAKİT HIRSIZLIĞI — ACİL UYARI 🚨🚨🚨
+            padding:18px;border-radius:16px;border:4px solid #b30000;
+            background:#ff1a1a;
+            color:white;
+            font-size:22px;line-height:1.5;margin:8px 0 14px 0;
+            box-shadow:0 10px 30px rgba(0,0,0,0.25);">
+            <div style="font-size:28px;font-weight:900;margin-bottom:6px;">
+                🚨 NAKİT HIRSIZLIĞI! 🚨
             </div>
-            <div><b>NAKİT ÇALINDI!</b></div>
             <div><b>Kayıp:</b> {fmt_tl(loss)}</div>
             <div><b>Kalan Nakit:</b> {fmt_tl(remain)}</div>
             <div style="font-size:15px;margin-top:8px;">
-                (Bu risk yalnızca <b>nakitte</b> geçerlidir. Bankadaki mevduat bu riskten etkilenmez.)
+                (Bu risk yalnızca <b>nakitte</b> geçerlidir. Bankadaki mevduat bu riske karşı daha korumalıdır.)
             </div>
         </div>
-
-        <audio autoplay>
-          <source src="data:audio/wav;base64,{beep_wav_base64}" type="audio/wav">
-        </audio>
 
         <script>
           setTimeout(function(){{
@@ -319,10 +311,10 @@ if st.session_state.get("theft_banner"):
           }}, 10000);
         </script>
         """,
-        height=190,
+        height=170,
     )
 
-    # Tek seferlik: tekrar render olmasın
+    # tek sefer göster
     st.session_state.theft_banner = None
 
 c1, c2 = st.columns([1, 4])
@@ -418,9 +410,6 @@ m5.metric("Borç", fmt_tl(p["debt"]))
 m6.metric("Servet (Net)", fmt_tl(net_wealth(p)))
 if float(p.get("debt", 0.0)) > 0:
     st.caption(f"Borç faizi (ağırlıklı ortalama): {fmt_pct(float(p.get('debt_rate', 0.0)))} / ay")
-
-# (İstersen debug için aç: garantili ayları görmek)
-# st.caption(f"🔎 (Debug) Garantili hırsızlık ayları: {p.get('theft_months')}")
 
 with st.expander("🏦 Mevduat Dökümü (Banka Bazında)", expanded=False):
     cA, cB = st.columns(2)
@@ -610,19 +599,49 @@ max_buy = float(available_for_invest_preview)
 colB1, colB2 = st.columns(2)
 with colB1:
     if "dd" in opened and month >= 4:
-        inv_inputs["dd"] = safe_number_input(f"Vadesiz Mevduat ALIŞ (TL) | Komisyon: {fee*100:.2f}%", f"buy_dd_{name}_{month}", max_buy, 1000.0)
+        inv_inputs["dd"] = safe_number_input(
+            f"Vadesiz Mevduat ALIŞ (TL) | Komisyon: {fee*100:.2f}%",
+            f"buy_dd_{name}_{month}",
+            max_buy,
+            1000.0
+        )
     if "td" in opened and month >= 4:
-        inv_inputs["td"] = safe_number_input(f"Vadeli Mevduat ALIŞ (TL) | Komisyon: {fee*100:.2f}%", f"buy_td_{name}_{month}", max_buy, 1000.0)
+        inv_inputs["td"] = safe_number_input(
+            f"Vadeli Mevduat ALIŞ (TL) | Komisyon: {fee*100:.2f}%",
+            f"buy_td_{name}_{month}",
+            max_buy,
+            1000.0
+        )
     if "fx" in opened:
-        inv_inputs["fx"] = safe_number_input(f"Döviz ALIŞ (TL) | Maliyet: {buy_cost_rate('fx')*100:.2f}%", f"buy_fx_{name}_{month}", max_buy, 1000.0)
+        inv_inputs["fx"] = safe_number_input(
+            f"Döviz ALIŞ (TL) | Maliyet: {buy_cost_rate('fx')*100:.2f}%",
+            f"buy_fx_{name}_{month}",
+            max_buy,
+            1000.0
+        )
     if "pm" in opened:
-        inv_inputs["pm"] = safe_number_input(f"Kıymetli Metal ALIŞ (TL) | Maliyet: {buy_cost_rate('pm')*100:.2f}%", f"buy_pm_{name}_{month}", max_buy, 1000.0)
+        inv_inputs["pm"] = safe_number_input(
+            f"Kıymetli Metal ALIŞ (TL) | Maliyet: {buy_cost_rate('pm')*100:.2f}%",
+            f"buy_pm_{name}_{month}",
+            max_buy,
+            1000.0
+        )
 
 with colB2:
     if "eq" in opened:
-        inv_inputs["eq"] = safe_number_input(f"Hisse Senedi ALIŞ (TL) | Maliyet: {buy_cost_rate('eq')*100:.2f}%", f"buy_eq_{name}_{month}", max_buy, 1000.0)
+        inv_inputs["eq"] = safe_number_input(
+            f"Hisse Senedi ALIŞ (TL) | Maliyet: {buy_cost_rate('eq')*100:.2f}%",
+            f"buy_eq_{name}_{month}",
+            max_buy,
+            1000.0
+        )
     if "cr" in opened:
-        inv_inputs["cr"] = safe_number_input(f"Kripto ALIŞ (TL) | Maliyet: {buy_cost_rate('cr')*100:.2f}%", f"buy_cr_{name}_{month}", max_buy, 1000.0)
+        inv_inputs["cr"] = safe_number_input(
+            f"Kripto ALIŞ (TL) | Maliyet: {buy_cost_rate('cr')*100:.2f}%",
+            f"buy_cr_{name}_{month}",
+            max_buy,
+            1000.0
+        )
 
 total_buy = float(sum(inv_inputs.values())) if inv_inputs else 0.0
 st.write(f"Bu ay toplam ALIŞ (brüt): **{fmt_tl(total_buy)}**")
@@ -794,14 +813,11 @@ if st.button(btn_label):
             spread_cost_total += spr_part
             p["holdings"][k] += max(net, 0.0)
 
-    # F) NAKİT HIRSIZLIK ✅ 12 ay içinde EN AZ 3 KEZ GARANTİLİ + (istersen) ekstra sürpriz
+    # F) NAKİT HIRSIZLIK ✅ en az 3 kez garantili + ekstra sürpriz
     theft_trigger = False
-
-    # 1) Garantili 3 ay
     if month in p.get("theft_months", []) and float(p["holdings"]["cash"]) > 0:
         theft_trigger = True
     else:
-        # 2) Ekstra sürpriz (olasılık)
         prob = CFG["CASH_THEFT_PROB_STAGE1"] if month <= 3 else CFG["CASH_THEFT_PROB_STAGE2"]
         if float(p["holdings"]["cash"]) > 0 and rng.random() < prob:
             theft_trigger = True
@@ -885,24 +901,19 @@ if st.button(btn_label):
     p["log"].append({
         "Ay": month,
         "Aşama": stage_label(month),
-
         "EnflasyonOranı": float(infl),
         "Gelir(TL)": float(income),
         "SabitGider(TL)": float(fixed_this_month),
         "EkHarcama(TL)": float(extra),
-
         "YeniBorç(TL)": float(new_borrow_taken),
         "BorçFaizOranı(Ort)": float(p.get("debt_rate", 0.0)),
-
         "İşlemÜcreti(TL)": float(tx_fee_total),
         "SpreadMaliyeti(TL)": float(spread_cost_total),
         "VadeliBozmaCezası(TL)": float(early_break_penalty_total),
         "VadeliFaizGeliri(TL)": float(td_interest),
-
         "NakitHırsızlıkKayıp(TL)": float(theft_loss),
         "BankaKayıp(TL)": float(bank_loss),
         "BorçÖdeme(TL)": float(repay_amt),
-
         "DönemSonuNakit(TL)": float(end_cash),
         "DönemSonuYatırım(TL)": float(end_inv),
         "DönemSonuBorç(TL)": float(end_debt),
