@@ -239,8 +239,9 @@ if "seed" not in st.session_state:
     st.session_state.seed = 20260209
 if "players" not in st.session_state:
     st.session_state.players = {}
-if "theft_banner" not in st.session_state:
-    st.session_state.theft_banner = None
+# ✅ artık banner değil popup state
+if "theft_popup" not in st.session_state:
+    st.session_state.theft_popup = None
 
 def get_player(name: str) -> dict:
     if name not in st.session_state.players:
@@ -280,42 +281,107 @@ def get_player(name: str) -> dict:
 # =========================
 st.title("🎮 1. Hafta Oyunu: Neden Finansal Piyasalar ve Kurumlarla İlgileniyoruz?")
 
-# ✅ HIRSIZLIK: KIRMIZI UYARI + 10 sn sonra kaybolur (tek seferlik)
-if st.session_state.get("theft_banner"):
-    loss = float(st.session_state.theft_banner["loss"])
-    remain = float(st.session_state.theft_banner["remain"])
-    banner_id = f"theft_red_{st.session_state.get('seed', 0)}_{np.random.randint(1_000_000)}"
+# =========================
+# ✅ HIRSIZLIK POP-UP (MODAL)
+# =========================
+# theft_popup: {"loss":..., "remain":..., "month":..., "player":...}
+if st.session_state.get("theft_popup"):
+    pop = st.session_state.theft_popup
+    loss = float(pop.get("loss", 0.0))
+    remain = float(pop.get("remain", 0.0))
+    m = int(pop.get("month", 0))
+    player = str(pop.get("player", ""))
+
+    modal_id = f"theftModal_{st.session_state.get('seed',0)}_{np.random.randint(1_000_000)}"
+    btn_id = f"theftBtn_{np.random.randint(1_000_000)}"
 
     components.html(
         f"""
-        <div id="{banner_id}" style="
-            padding:18px;border-radius:16px;border:4px solid #b30000;
-            background:#ff1a1a;
-            color:white;
-            font-size:22px;line-height:1.5;margin:8px 0 14px 0;
-            box-shadow:0 10px 30px rgba(0,0,0,0.25);">
-            <div style="font-size:28px;font-weight:900;margin-bottom:6px;">
-                🚨 NAKİT HIRSIZLIĞI! 🚨
+        <div id="{modal_id}" style="
+            position:fixed; z-index:999999;
+            left:0; top:0; width:100%; height:100%;
+            background: rgba(0,0,0,0.55);
+            display:flex; align-items:center; justify-content:center;
+            padding: 20px;
+        ">
+          <div style="
+              width: min(720px, 95vw);
+              background: #ffffff;
+              border-radius: 18px;
+              box-shadow: 0 18px 60px rgba(0,0,0,0.35);
+              border: 5px solid #b30000;
+              overflow:hidden;
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+          ">
+            <div style="
+                background:#ff1a1a; color:white;
+                padding: 18px 20px;
+                font-size: 26px;
+                font-weight: 900;
+                letter-spacing: 0.3px;
+            ">
+              🚨 NAKİT HIRSIZLIĞI! 🚨
             </div>
-            <div><b>Kayıp:</b> {fmt_tl(loss)}</div>
-            <div><b>Kalan Nakit:</b> {fmt_tl(remain)}</div>
-            <div style="font-size:15px;margin-top:8px;">
-                (Bu risk yalnızca <b>nakitte</b> geçerlidir. Bankadaki mevduat bu riske karşı daha korumalıdır.)
+
+            <div style="padding: 18px 20px; font-size: 18px; line-height: 1.55; color:#111;">
+              <div style="margin-bottom:10px;">
+                <b>Oyuncu:</b> {player} &nbsp; | &nbsp; <b>Ay:</b> {m}
+              </div>
+
+              <div style="margin-bottom:6px;">
+                <b>Kayıp:</b> <span style="color:#b30000; font-weight:800;">{fmt_tl(loss)}</span>
+              </div>
+
+              <div style="margin-bottom:12px;">
+                <b>Kalan Nakit:</b> <span style="font-weight:800;">{fmt_tl(remain)}</span>
+              </div>
+
+              <div style="
+                  background:#fff3f3; border:1px solid #ffd0d0;
+                  padding: 12px 12px; border-radius: 12px;
+                  font-size: 14px; color:#4a0000;
+              ">
+                Bu risk yalnızca <b>nakitte</b> geçerlidir.
+                Bankadaki mevduat bu riske karşı daha korumalıdır.
+              </div>
+
+              <div style="display:flex; justify-content:flex-end; margin-top:16px;">
+                <button id="{btn_id}" style="
+                    background:#b30000; color:white;
+                    border:none; border-radius:12px;
+                    padding: 10px 16px;
+                    font-size: 16px; font-weight: 800;
+                    cursor:pointer;
+                ">
+                  Tamam
+                </button>
+              </div>
             </div>
+          </div>
         </div>
 
         <script>
-          setTimeout(function(){{
-            var el = document.getElementById("{banner_id}");
-            if(el) el.style.display = "none";
-          }}, 10000);
+          (function() {{
+            var modal = document.getElementById("{modal_id}");
+            var btn = document.getElementById("{btn_id}");
+            function closeModal() {{
+              if(modal) modal.style.display = "none";
+            }}
+            if(btn) btn.addEventListener("click", closeModal);
+            // arka plana tıklayınca kapansın:
+            if(modal) {{
+              modal.addEventListener("click", function(e) {{
+                if(e.target === modal) closeModal();
+              }});
+            }}
+          }})();
         </script>
         """,
-        height=170,
+        height=0,
     )
 
-    # tek sefer göster
-    st.session_state.theft_banner = None
+    # ✅ tek sefer göster
+    st.session_state.theft_popup = None
 
 c1, c2 = st.columns([1, 4])
 with c1:
@@ -826,7 +892,14 @@ if st.button(btn_label):
         sev = float(rng.uniform(CFG["CASH_THEFT_SEV_MIN"], CFG["CASH_THEFT_SEV_MAX"]))
         theft_loss = float(p["holdings"]["cash"]) * sev
         p["holdings"]["cash"] -= theft_loss
-        st.session_state.theft_banner = {"loss": float(theft_loss), "remain": float(p["holdings"]["cash"])}
+
+        # ✅ POPUP tetikle
+        st.session_state.theft_popup = {
+            "loss": float(theft_loss),
+            "remain": float(p["holdings"]["cash"]),
+            "month": int(month),
+            "player": str(name),
+        }
 
     # G) BANKA OLAYI + VADELİ FAİZ
     if month >= 4:
