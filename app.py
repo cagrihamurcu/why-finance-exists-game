@@ -25,7 +25,7 @@ CFG = {
 
     "LOAN_ACTIVE_FROM_MONTH": 4,
 
-    # Nakit hırsızlığı (ek sürpriz olasılıkları - garantili 3 defa bunun üstüne gelebilir)
+    # Nakit hırsızlığı
     "CASH_THEFT_PROB_STAGE1": 0.12,
     "CASH_THEFT_PROB_STAGE2": 0.05,
     "CASH_THEFT_SEV_MIN": 0.10,
@@ -42,7 +42,7 @@ CFG = {
     "GUAR_MIN": 0.70,
     "GUAR_MAX": 0.99,
 
-    # Banka kredi faizi (aylık) - güvence düşükse faiz daha yüksek (trade-off)
+    # Banka kredi faizi (aylık)
     "LOAN_RATE_BASE": 0.018,
     "LOAN_RATE_ADD": 0.030,
     "LOAN_RATE_NOISE": 0.002,
@@ -51,7 +51,7 @@ CFG = {
     # Vadeli bozma cezası
     "EARLY_BREAK_PENALTY": 0.01,
 
-    # İşlem komisyonu (tüm finansal kurum işlemleri)
+    # İşlem komisyonu
     "TX_FEE": 0.005,
 
     # Spread (toplam)
@@ -272,7 +272,7 @@ def get_player(name: str) -> dict:
     return st.session_state.players[name]
 
 # =========================
-# SIDEBAR
+# SIDEBAR (istenen satırlar kaldırıldı)
 # =========================
 with st.sidebar:
     st.header("🎮 Oyun Kontrol")
@@ -306,7 +306,7 @@ month = int(p["month"])
 opened = open_assets_by_month(month)
 
 # =========================
-# ✅ HIRSIZLIK MODAL (Pop-up) — Oyuncu kapatana kadar açık
+# ✅ HIRSIZLIK MODAL (Pop-up)
 # =========================
 def render_theft_modal():
     pop = st.session_state.get("theft_popup")
@@ -318,7 +318,7 @@ def render_theft_modal():
     m = int(pop.get("month", month))
     player = str(pop.get("player", name))
 
-    # 1) Eğer st.dialog varsa: gerçek modal
+    # 1) st.dialog varsa: gerçek modal
     if hasattr(st, "dialog"):
         @st.dialog("🚨 NAKİT HIRSIZLIĞI!")
         def _dlg():
@@ -336,10 +336,9 @@ def render_theft_modal():
             if st.button("Kapat ✖", use_container_width=True, key=f"close_modal_{player}_{m}"):
                 st.session_state.theft_popup = None
                 st.rerun()
-
         _dlg()
 
-    # 2) Fallback (eski Streamlit): sayfa üstünde “modal kart”
+    # 2) Fallback: overlay + kapat butonu
     else:
         st.markdown(
             """
@@ -384,7 +383,6 @@ def render_theft_modal():
             """,
             unsafe_allow_html=True
         )
-        # fallback’te kapatma butonu normal akışta:
         if st.button("Kapat ✖", key=f"close_fallback_{player}_{m}", use_container_width=True):
             st.session_state.theft_popup = None
             st.rerun()
@@ -410,23 +408,20 @@ if p.get("finished", False):
     if float(p.get("debt", 0.0)) > 0:
         st.caption(f"Borç faizi (ağırlıklı ortalama): {fmt_pct(float(p.get('debt_rate', 0.0)))} / ay")
 
-    if p["log"]:
-        st.divider()
-        st.subheader("📒 Geçmiş (Sade)")
-        st.dataframe(pd.DataFrame(p["log"]), use_container_width=True, hide_index=True, height=520)
-
     st.stop()
 
 # =========================
-# AY PANELİ (ÖZET ŞERİT) — ✅ “Ay/Aşama” küçük ve okunur
+# AY PANELİ (ÖZET ŞERİT)
 # =========================
 income = float(p["income_fixed"])
 infl = float(p["infl_current"])
 fixed_this_month = float(p["fixed_current"])
 
 st.markdown(f"### 📅 Ay {month}/{CFG['MONTHS']}  —  Aşama: **{stage_label(month)}**")
-st.caption("Aşağıdaki özet kutuları tek bakış içindir. Detaylar sekmelerde.")
+st.caption("Özet kutuları tek bakış içindir. Detaylar sekmelerde.")
+st.progress((month - 1) / CFG["MONTHS"])
 
+# ✅ İstenen: oyuncu adının altındaki ekran sıkışık olmasın → 2 satır özet
 r1a, r1b, r1c, r1d = st.columns(4)
 r1a.metric("Net Servet", fmt_tl(net_wealth(p)))
 r1b.metric("Nakit", fmt_tl(p["holdings"]["cash"]))
@@ -441,8 +436,6 @@ r2d.metric("Borç Mekanizması", "Açık (Banka)" if can_borrow(month) else "Kap
 
 if float(p.get("debt", 0.0)) > 0:
     st.caption(f"Borç faizi (ağırlıklı ortalama): {fmt_pct(float(p.get('debt_rate', 0.0)))} / ay")
-
-st.progress((month - 1) / CFG["MONTHS"])
 
 # =========================
 # TABS
@@ -545,11 +538,39 @@ with tab_rank:
     st.dataframe(lb, use_container_width=True, hide_index=True, height=520)
 
 # -------------------------------------------------
-# GEÇMİŞ
+# GEÇMİŞ — ✅ YATAY KAYDIRMA YOK: Kart/expander görünümü
 # -------------------------------------------------
 with tab_log:
-    st.subheader("📒 Geçmiş (Sade)")
-   st.subheader("📒 Geçmiş
+    st.subheader("📒 Geçmiş (Tüm Alanlar — Kaydırmasız)")
+
+    if not p["log"]:
+        st.info("Henüz geçmiş kaydı yok. 1. ayı tamamlayınca burada görünecek.")
+    else:
+        st.caption("Her ayı açarak tüm alanları yatay kaydırma olmadan görebilirsiniz.")
+        for row in reversed(p["log"]):
+            ay = row.get("Ay", "-")
+            asama = row.get("Aşama", "-")
+
+            with st.expander(f"Ay {ay} — {asama}", expanded=False):
+                cols = st.columns(2)
+                items = list(row.items())
+                half = (len(items) + 1) // 2
+                left_items = items[:half]
+                right_items = items[half:]
+
+                def render_kv(pairs, col):
+                    with col:
+                        for k, v in pairs:
+                            if isinstance(v, (int, float)):
+                                if "Enflasyon" in str(k) or "FaizOranı" in str(k):
+                                    st.markdown(f"**{k}:** {fmt_pct(float(v))}")
+                                else:
+                                    st.markdown(f"**{k}:** {fmt_tl(float(v))}")
+                            else:
+                                st.markdown(f"**{k}:** {v}")
+
+                render_kv(left_items, cols[0])
+                render_kv(right_items, cols[1])
 
 # -------------------------------------------------
 # KARAR EKRANI
@@ -818,7 +839,6 @@ with tab_game:
             tx_fee_total += fee_part
 
         # B) GELİR / GİDER
-        total_exp = fixed_this_month + float(extra)
         p["holdings"]["cash"] += income
         p["holdings"]["cash"] -= total_exp
 
@@ -896,7 +916,7 @@ with tab_game:
                 spread_cost_total += spr_part
                 p["holdings"][k] += max(net, 0.0)
 
-        # F) NAKİT HIRSIZLIK (garantili aylar + sürpriz)
+        # F) NAKİT HIRSIZLIK
         theft_trigger = False
         if month in p.get("theft_months", []) and float(p["holdings"]["cash"]) > 0:
             theft_trigger = True
@@ -910,7 +930,6 @@ with tab_game:
             theft_loss = float(p["holdings"]["cash"]) * sev
             p["holdings"]["cash"] -= theft_loss
 
-            # ✅ Modal tetikle (oyuncu kapatana kadar kalır)
             st.session_state.theft_popup = {
                 "loss": float(theft_loss),
                 "remain": float(p["holdings"]["cash"]),
