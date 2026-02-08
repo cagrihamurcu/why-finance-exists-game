@@ -26,14 +26,10 @@ CFG = {
     "CASH_THEFT_SEV_MIN": 0.10,
     "CASH_THEFT_SEV_MAX": 0.35,
 
-    # Banka riski (çok düşük olasılık)
+    # Banka olayı (çok düşük olasılık)
     "BANK_INCIDENT_PROB": 0.02,  # her banka/ay için olay olasılığı
 
-    # Mevduat baz faizleri (aylık) -> bankalar bunu ufak oynar
-    "DD_RATE_BASE": 0.0025,  # vadesiz
-    "TD_RATE_BASE": 0.0100,  # vadeli
-
-    # Banka faiz aralığı (trade-off için)
+    # Vadeli mevduat faiz aralığı (aylık) (trade-off için)
     "TD_RATE_MIN": 0.0070,   # %0.70 aylık
     "TD_RATE_MAX": 0.0140,   # %1.40 aylık
 
@@ -64,7 +60,7 @@ CFG = {
 
 ASSETS = {
     "cash": "Nakit",
-    "dd": "Vadesiz Mevduat",
+    "dd": "Vadesiz Mevduat (Faiz Yok)",
     "td": "Vadeli Mevduat",
     "fx": "Döviz",
     "pm": "Kıymetli Metal",
@@ -110,15 +106,16 @@ def rng_for_player(name: str, month: int):
     return np.random.default_rng((hash(name) % 10000) + month * 1000 + st.session_state.seed)
 
 def bank_count_for_month(month: int) -> int:
-    # Ay4:2 banka, Ay5:3 banka, ...
     if month < 4:
         return 0
+    # Ay4:2 banka, Ay5:3 banka, ...
     return min(2 + (month - 4), 8)
 
 def banks_for_month(month: int):
     """
     Ay 4+ bankalar her ay artar.
     Trade-off: Vadeli faiz yükseldikçe güvence ortalamada düşer.
+    Vadesiz mevduat faizsiz (0).
     """
     n = bank_count_for_month(month)
     if n == 0:
@@ -126,34 +123,26 @@ def banks_for_month(month: int):
 
     r = rng_for_global(month)
 
-    # 1) Önce TD faizleri üret (dağılım), sonra sırala
+    # vadeli faizleri üret
     td_rates = r.uniform(CFG["TD_RATE_MIN"], CFG["TD_RATE_MAX"], size=n)
     td_sorted_idx = np.argsort(td_rates)  # düşükten yükseğe
 
     banks = [None] * n
-
     for rank, idx in enumerate(td_sorted_idx):
         td = float(td_rates[idx])
 
-        # rank: 0 en düşük faiz, n-1 en yüksek faiz
-        # 2) Trade-off: yüksek faiz => düşük güvence
-        # lineer çekirdek + noise
+        # trade-off: yüksek faiz => düşük güvence
         x = rank / max(n - 1, 1)  # 0..1
         base_guar = CFG["GUAR_MAX"] - x * (CFG["GUAR_MAX"] - CFG["GUAR_MIN"])
-        noise = float(r.normal(0, 0.015))  # küçük sapma
+        noise = float(r.normal(0, 0.015))
         guarantee = float(np.clip(base_guar + noise, CFG["GUAR_MIN"], CFG["GUAR_MAX"]))
-
-        # 3) Vadesiz faiz: TD ile zayıf ilişki (çok küçük) + noise
-        dd = float(CFG["DD_RATE_BASE"] + (td - CFG["TD_RATE_BASE"]) * 0.10 + r.normal(0, 0.00025))
-        dd = float(max(0.0, dd))
 
         banks[idx] = {
             "Bank": f"Banka {idx + 1}",
             "TD_Rate": td,
-            "DD_Rate": dd,
+            "DD_Rate": 0.0,  # vadesiz faiz yok
             "Guarantee": guarantee
         }
-
     return banks
 
 def banks_df(month: int) -> pd.DataFrame:
@@ -162,11 +151,8 @@ def banks_df(month: int) -> pd.DataFrame:
         return pd.DataFrame()
     df = pd.DataFrame(b)
     df["Vadeli Faiz (Aylık)"] = df["TD_Rate"].map(lambda x: f"{x*100:.2f}%")
-    df["Vadesiz Faiz (Aylık)"] = df["DD_Rate"].map(lambda x: f"{x*100:.2f}%")
     df["Güvence Oranı"] = df["Guarantee"].map(lambda x: f"{x*100:.0f}%")
-    # Öğrenci için "trade-off" vurgusu: faiz sırasına göre göster
-    df2 = df.copy().sort_values("TD_Rate", ascending=False)
-    return df2[["Bank", "Vadeli Faiz (Aylık)", "Vadesiz Faiz (Aylık)", "Güvence Oranı"]]
+    return df.sort_values("TD_Rate", ascending=False)[["Bank", "Vadeli Faiz (Aylık)", "Güvence Oranı"]]
 
 # =========================
 # SESSION
@@ -183,13 +169,15 @@ def get_player(name: str) -> dict:
             "finished": False,
             "defaulted": False,
             "debt": 0.0,
-            "holdings": {k: 0.0 for k in ASSETS},
+            "holdings": {k: 0.0 for k in ASSETS},  # cash, fx, pm, eq, cr
             "dd_accounts": {},  # bank -> balance
             "td_accounts": {},  # bank -> balance
             "log": [],
             "income_fixed": float(DEFAULT_MONTHLY_INCOME),
             "fixed_current": float(START_FIXED_COST),
             "last_event": None,
+            "last_dd_bank": None,
+            "last_td_bank": None,
         }
     p = st.session_state.players[name]
     for k in ASSETS:
@@ -220,9 +208,9 @@ st.title("🎮 Finansal Piyasalar Neden Var? (1. Hafta Oyunu)")
 st.caption(
     "Kurallar: Ay 1–3 borç yok (açık → temerrüt). Ay 4+ kredi var (açık otomatik kredi). "
     "Enflasyon sabit gideri artırır. Nakit bazı turlarda rastgele çalınabilir. "
-    "Ay 4+ bankalar devreye girer; her ay banka sayısı artar. Bankaların vadeli/vadesiz faizleri ve güvence oranı farklıdır. "
+    "Ay 4+ bankalar devreye girer; her ay banka sayısı artar. Bankaların vadeli faizleri ve güvence oranı farklıdır. "
     "Trade-off: Daha yüksek vadeli faiz, ortalamada daha düşük güvence demektir. "
-    "Oyun 12 ay sürer."
+    "Vadesiz mevduat faizsizdir (0). Oyun 12 ay sürer."
 )
 
 c1, c2 = st.columns([1, 3])
@@ -257,9 +245,8 @@ st.subheader("🏆 Oyuncu Sıralaması")
 rows = []
 for pname, pp in st.session_state.players.items():
     cash = float(pp["holdings"].get("cash", 0.0))
-    inv = float(sum(v for k, v in pp["holdings"].items() if k != "cash"))
-    inv += float(sum(pp.get("dd_accounts", {}).values()))
-    inv += float(sum(pp.get("td_accounts", {}).values()))
+    inv_other = float(sum(v for k, v in pp["holdings"].items() if k != "cash"))
+    inv = inv_other + float(sum(pp.get("dd_accounts", {}).values())) + float(sum(pp.get("td_accounts", {}).values()))
     debt = float(pp.get("debt", 0.0))
     net = cash + inv - debt
 
@@ -308,7 +295,6 @@ if p.get("finished", False):
 # =========================
 month = int(p["month"])
 opened = open_assets_by_month(month)
-investable = [k for k in opened if k != "cash"]
 
 income = float(p["income_fixed"])
 infl = inflation_rate_for_month(month)
@@ -336,35 +322,35 @@ m6.metric("Servet (Net)", fmt_tl(net_wealth(p)))
 # =========================
 # BANKALAR (Ay 4+)
 # =========================
+bank_map = {}
 if month >= 4:
     st.divider()
-    st.subheader("🏦 Bankalar (Bu Ay) — Faiz/Güvence Trade-off")
+    st.subheader("🏦 Bankalar (Bu Ay) — Vadeli Faiz / Güvence Trade-off")
 
     b_list = banks_for_month(month)
     bank_map = {b["Bank"]: b for b in b_list}
-    bdf = banks_df(month)
-    st.dataframe(bdf, use_container_width=True, hide_index=True, height=220)
+    st.dataframe(banks_df(month), use_container_width=True, hide_index=True, height=220)
 
     banks_names = list(bank_map.keys())
-    prev_dd = p.get("last_dd_bank", banks_names[0])
-    prev_td = p.get("last_td_bank", banks_names[0])
+    # ilk seçim
+    if p.get("last_dd_bank") is None:
+        p["last_dd_bank"] = banks_names[-1]  # (rastgele bir tercih)
+    if p.get("last_td_bank") is None:
+        p["last_td_bank"] = banks_names[0]   # en yüksek faizli (tablo sıralı)
 
     cA, cB = st.columns(2)
     with cA:
-        selected_dd_bank = st.selectbox(
+        p["last_dd_bank"] = st.selectbox(
             "Vadesiz mevduat için bankanı seç",
             banks_names,
-            index=banks_names.index(prev_dd) if prev_dd in banks_names else 0
+            index=banks_names.index(p["last_dd_bank"]) if p["last_dd_bank"] in banks_names else 0
         )
     with cB:
-        selected_td_bank = st.selectbox(
+        p["last_td_bank"] = st.selectbox(
             "Vadeli mevduat için bankanı seç",
             banks_names,
-            index=banks_names.index(prev_td) if prev_td in banks_names else 0
+            index=banks_names.index(p["last_td_bank"]) if p["last_td_bank"] in banks_names else 0
         )
-
-    p["last_dd_bank"] = selected_dd_bank
-    p["last_td_bank"] = selected_td_bank
 
 # =========================
 # 1) BÜTÇE
@@ -380,55 +366,54 @@ extra = st.number_input("Ek Harcama", 0, max(0, extra_max), extra_default, 1000)
 total_exp = fixed_this_month + float(extra)
 saving = max(income - total_exp, 0.0)
 
+st.write(f"Gelir: **{fmt_tl(income)}** | Toplam gider: **{fmt_tl(total_exp)}** | Tasarruf: **{fmt_tl(saving)}**")
+
 if (not can_borrow(month)) and (total_exp > available_without_borrow):
     st.error("Ay 1–3'te borç yok. Bu bütçe nakit+geliri aşıyor → temerrüt olur. Ek harcamayı düşürün.")
 
-cash_before_invest = float(p["holdings"]["cash"]) + income - total_exp
-cash_before_invest = max(cash_before_invest, 0.0)
+# Bu ay giderlerden sonra elde kalacak nakit (yatırıma ayrılabilir maksimum)
+cash_available_for_invest = float(p["holdings"]["cash"]) + income - total_exp
+cash_available_for_invest = max(cash_available_for_invest, 0.0)
 
 # =========================
-# 2) YATIRIM HAVUZU
+# 2) YATIRIM (TL ile)
 # =========================
 st.divider()
-st.subheader("2) Yatırım (Tasarrufu + Birikimi Dağıt)")
+st.subheader("2) Yatırım Kararı (TL) — Neyi, Ne Kadar Alacaksın?")
 
-cash_extra = 0.0
-if investable:
-    cash_extra = st.number_input(
-        "Nakitten Ek Yatırım (TL)",
-        min_value=0.0,
-        max_value=float(cash_before_invest),
-        value=0.0,
-        step=1000.0
-    )
-else:
-    st.caption("Bu ay yatırım aracı yok → tasarruf nakitte kalır.")
+st.caption("Tüm girişler TL’dir. Toplam yatırım tutarı, giderlerden sonra elde kalan tutarı aşamaz. Kalan para nakitte kalır (hırsızlık riski).")
 
-invest_pool = float(saving + cash_extra)
-st.write(f"Toplam yatırım havuzu: **{fmt_tl(invest_pool)}**")
+inv_inputs = {}
 
-alloc = {}
-alloc_sum = 0.0
+def money_input(label, key, maxv):
+    return st.number_input(label, min_value=0.0, max_value=float(maxv), value=0.0, step=1000.0, key=key)
 
-if invest_pool > 0 and investable:
-    st.caption("Yüzdeleri girin. Toplam 100'ü aşarsa otomatik normalize edilir.")
-    for k in investable:
-        cA, cB, cC = st.columns([2.8, 1.2, 0.6])
-        with cA:
-            st.write(ASSETS[k])
-        with cB:
-            alloc[k] = st.number_input(
-                f"{k}_pct",
-                min_value=0,
-                max_value=100,
-                value=0,
-                step=5,
-                label_visibility="collapsed",
-            )
-        with cC:
-            st.write("%")
-    alloc_sum = float(sum(alloc.values()))
-    st.write(f"Toplam: **{int(alloc_sum)}%**")
+colL, colR = st.columns(2)
+
+with colL:
+    if "dd" in opened and month >= 4:
+        inv_inputs["dd"] = money_input("Vadesiz Mevduat (TL) — faiz yok", f"dd_amt_{name}_{month}", cash_available_for_invest)
+    if "td" in opened and month >= 4:
+        inv_inputs["td"] = money_input("Vadeli Mevduat (TL)", f"td_amt_{name}_{month}", cash_available_for_invest)
+    if "fx" in opened:
+        inv_inputs["fx"] = money_input("Döviz (TL)", f"fx_amt_{name}_{month}", cash_available_for_invest)
+    if "pm" in opened:
+        inv_inputs["pm"] = money_input("Kıymetli Metal (TL)", f"pm_amt_{name}_{month}", cash_available_for_invest)
+
+with colR:
+    if "eq" in opened:
+        inv_inputs["eq"] = money_input("Hisse Senedi (TL)", f"eq_amt_{name}_{month}", cash_available_for_invest)
+    if "cr" in opened:
+        inv_inputs["cr"] = money_input("Kripto (TL)", f"cr_amt_{name}_{month}", cash_available_for_invest)
+
+total_alloc = float(sum(inv_inputs.values())) if inv_inputs else 0.0
+remaining_cash_after_alloc = float(max(cash_available_for_invest - total_alloc, 0.0))
+
+st.write(f"Bu ay yatırım toplamı: **{fmt_tl(total_alloc)}**")
+st.write(f"Yatırım sonrası nakitte kalacak: **{fmt_tl(remaining_cash_after_alloc)}**")
+
+if total_alloc > cash_available_for_invest + 1e-9:
+    st.error("Toplam yatırım, bu ay yatırılabilir nakdi aşıyor. Tutarları düşürün.")
 
 # =========================
 # 3) BORÇ GERİ ÖDEME
@@ -448,14 +433,15 @@ else:
 btn_label = "✅ Ayı Tamamla" if month < CFG["MONTHS"] else "✅ 12. Ayı Tamamla ve Bitir"
 
 if st.button(btn_label):
+    if total_alloc > cash_available_for_invest + 1e-9:
+        st.stop()
+
     rng = rng_for_player(name, month)
 
-    invested_amount = 0.0
     repay_amt = 0.0
     cash_theft_loss = 0.0
     bank_incident_loss = 0.0
     td_interest_income = 0.0
-    dd_interest_income = 0.0
 
     # 0) gelir ekle
     p["holdings"]["cash"] += income
@@ -463,9 +449,10 @@ if st.button(btn_label):
     # 1) giderleri öde
     p["holdings"]["cash"] -= total_exp
 
+    # açık varsa
     if p["holdings"]["cash"] < 0:
         deficit = -float(p["holdings"]["cash"])
-        if month < 4:
+        if not can_borrow(month):
             p["holdings"]["cash"] = 0.0
             p["defaulted"] = True
             p["finished"] = True
@@ -475,43 +462,37 @@ if st.button(btn_label):
             p["debt"] += deficit
             p["holdings"]["cash"] = 0.0
 
-    # 2) yatırım transferi
-    if invest_pool > 0 and investable and alloc_sum > 0:
-        invested_amount = invest_pool if alloc_sum >= 100 else invest_pool * (alloc_sum / 100.0)
+    # 2) yatırım aktarımı (TL)
+    for k, amt in inv_inputs.items():
+        amt = float(amt)
+        if amt <= 0:
+            continue
 
-        alloc_adj = dict(alloc)
-        if alloc_sum > 100:
-            alloc_adj = {k: (v / alloc_sum) * 100 for k, v in alloc.items()}
+        if k == "dd":
+            bank = p.get("last_dd_bank") or "Banka 1"
+            p["dd_accounts"][bank] = float(p["dd_accounts"].get(bank, 0.0) + amt)
+        elif k == "td":
+            bank = p.get("last_td_bank") or "Banka 1"
+            p["td_accounts"][bank] = float(p["td_accounts"].get(bank, 0.0) + amt)
+        else:
+            p["holdings"][k] += amt
 
-        for k, pct in alloc_adj.items():
-            invest_amt = invest_pool * (float(pct) / 100.0)
-            if invest_amt <= 0:
-                continue
+        p["holdings"]["cash"] -= amt
 
-            if k == "dd":
-                bank = p.get("last_dd_bank", "Banka 1")
-                p["dd_accounts"][bank] = float(p["dd_accounts"].get(bank, 0.0) + invest_amt)
-            elif k == "td":
-                bank = p.get("last_td_bank", "Banka 1")
-                p["td_accounts"][bank] = float(p["td_accounts"].get(bank, 0.0) + invest_amt)
-            else:
-                p["holdings"][k] += invest_amt
+    # yatırım sonrası nakit negatife düştüyse
+    if p["holdings"]["cash"] < 0:
+        deficit2 = -float(p["holdings"]["cash"])
+        if can_borrow(month):
+            p["debt"] += deficit2
+            p["holdings"]["cash"] = 0.0
+        else:
+            p["holdings"]["cash"] = 0.0
+            p["defaulted"] = True
+            p["finished"] = True
+            p["last_event"] = {"kind": "error", "msg": "⛔ Ay 1–3 döneminde yatırım yüzünden açık oluştu: TEMERRÜT!"}
+            st.rerun()
 
-            p["holdings"]["cash"] -= invest_amt
-
-        if p["holdings"]["cash"] < 0:
-            deficit2 = -float(p["holdings"]["cash"])
-            if month >= 4:
-                p["debt"] += deficit2
-                p["holdings"]["cash"] = 0.0
-            else:
-                p["holdings"]["cash"] = 0.0
-                p["defaulted"] = True
-                p["finished"] = True
-                p["last_event"] = {"kind": "error", "msg": "⛔ Ay 1–3 döneminde yatırım yüzünden açık oluştu: TEMERRÜT!"}
-                st.rerun()
-
-    # 3) Nakit hırsızlık
+    # 3) Nakit hırsızlık (rastgele)
     theft_prob = CFG["CASH_THEFT_PROB_STAGE1"] if month <= 3 else CFG["CASH_THEFT_PROB_STAGE2"]
     if p["holdings"]["cash"] > 0 and rng.random() < theft_prob:
         sev = float(rng.uniform(CFG["CASH_THEFT_SEV_MIN"], CFG["CASH_THEFT_SEV_MAX"]))
@@ -521,12 +502,12 @@ if st.button(btn_label):
     else:
         p["last_event"] = None
 
-    # 4) Banka olayı + faiz (Ay4+)
+    # 4) Banka olayı + vadeli faiz (Ay4+)
     if month >= 4:
         b_list = banks_for_month(month)
         bmap = {b["Bank"]: b for b in b_list}
 
-        # Banka olayı: güvence dışı kısım kayıp
+        # banka olayı: güvence dışı kısım kayıp (dd + td)
         for bank, bal in list(p["dd_accounts"].items()):
             if bal > 0 and bank in bmap and rng.random() < CFG["BANK_INCIDENT_PROB"]:
                 guar = float(bmap[bank]["Guarantee"])
@@ -544,15 +525,7 @@ if st.button(btn_label):
         if bank_incident_loss > 0:
             p["last_event"] = {"kind": "bank", "msg": f"🏦⚠️ Banka olayı! Mevduat kaybı: **{fmt_tl(bank_incident_loss)}**"}
 
-        # Faiz getirileri (bankaya göre)
-        for bank, bal in list(p["dd_accounts"].items()):
-            if bal > 0 and bank in bmap:
-                before = float(bal)
-                rate = float(bmap[bank]["DD_Rate"])
-                after = float(before * (1.0 + rate))
-                p["dd_accounts"][bank] = after
-                dd_interest_income += (after - before)
-
+        # vadeli faiz getirisi (sadece td)
         for bank, bal in list(p["td_accounts"].items()):
             if bal > 0 and bank in bmap:
                 before = float(bal)
@@ -587,11 +560,11 @@ if st.button(btn_label):
         p["holdings"]["fx"] *= (1.0 + fx_r)
 
     # 6) Borç faizi
-    if month >= 4 and float(p["debt"]) > 0:
+    if can_borrow(month) and float(p["debt"]) > 0:
         p["debt"] *= (1.0 + float(CFG["LOAN_RATE"]))
 
     # 7) Borç geri ödeme
-    if month >= 4 and float(p["debt"]) > 0 and repay_pct > 0:
+    if can_borrow(month) and float(p["debt"]) > 0 and repay_pct > 0:
         target = float(p["debt"]) * (float(repay_pct) / 100.0)
         repay_amt = min(float(p["holdings"]["cash"]), target)
         p["holdings"]["cash"] -= repay_amt
@@ -614,11 +587,10 @@ if st.button(btn_label):
         "SabitGider(TL)": fixed_this_month,
         "EkHarcama(TL)": float(extra),
         "Tasarruf(TL)": float(max(income - total_exp, 0.0)),
-        "NakittenEkYatırım(TL)": float(cash_extra),
-        "ToplamYatırımHavuzu(TL)": float(invest_pool),
-        "SeçilenDD_Banka": p.get("last_dd_bank", ""),
-        "SeçilenTD_Banka": p.get("last_td_bank", ""),
-        "VadesizFaizGeliri(TL)": float(dd_interest_income),
+        "DD_Yatırım(TL)": float(inv_inputs.get("dd", 0.0)),
+        "TD_Yatırım(TL)": float(inv_inputs.get("td", 0.0)),
+        "SeçilenDD_Banka": p.get("last_dd_bank", "") if month >= 4 else "",
+        "SeçilenTD_Banka": p.get("last_td_bank", "") if month >= 4 else "",
         "VadeliFaizGeliri(TL)": float(td_interest_income),
         "NakitKaybı(TL)": float(cash_theft_loss),
         "BankaKaybı(TL)": float(bank_incident_loss),
@@ -644,7 +616,7 @@ if st.button(btn_label):
     st.rerun()
 
 # =========================
-# GEÇMİŞ TABLO
+# GEÇMİŞ TABLO (EKRANA SIĞSIN)
 # =========================
 if p["log"]:
     st.divider()
