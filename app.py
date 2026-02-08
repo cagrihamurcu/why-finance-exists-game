@@ -16,12 +16,12 @@ START_FIXED_COST = 30000  # 1. ay sabit gider
 CFG = {
     "MONTHS": 12,
 
-    # ✅ Enflasyon: her ay +/- (%1 ile %5 arası adım)
-    # ✅ enflasyon oranı her zaman %1–%5 bandında kalır
-    "INFL_MIN_STEP": 0.01,
-    "INFL_MAX_STEP": 0.05,
-    "INFL_FLOOR": 0.01,
-    "INFL_CAP": 0.05,
+    # ✅ Fiyatlar genel düzeyi: her ay +/- (%1 ile %5 arası adım)
+    # ✅ oran her zaman %1–%5 bandında kalır
+    "PGL_MIN_STEP": 0.01,
+    "PGL_MAX_STEP": 0.05,
+    "PGL_FLOOR": 0.01,
+    "PGL_CAP": 0.05,
 
     "LOAN_ACTIVE_FROM_MONTH": 4,
 
@@ -117,23 +117,22 @@ def rng_for_global(month: int):
 def rng_for_player(name: str, month: int):
     return np.random.default_rng((hash(name) % 10000) + month * 1000 + st.session_state.seed)
 
-# ✅ Enflasyon adımı: %1–%5
-def random_infl_step(rng: np.random.Generator) -> float:
-    return float(rng.uniform(CFG["INFL_MIN_STEP"], CFG["INFL_MAX_STEP"]))
+# ✅ Aylık adım: %1–%5
+def random_pgl_step(rng: np.random.Generator) -> float:
+    return float(rng.uniform(CFG["PGL_MIN_STEP"], CFG["PGL_MAX_STEP"]))
 
-# ✅ Enflasyon güncelleme: random + / -, ama oran hep %1–%5 bandında kalır
-# ✅ ayrıca o ay gider güncellemesinde kullanılacak "signed_delta" döner
-def next_inflation(prev_infl: float, rng: np.random.Generator):
-    step = random_infl_step(rng)  # 0.01..0.05
+# ✅ PGL (fiyatlar genel düzeyi) güncelleme: random + / -, ama oran hep %1–%5 bandında
+# ✅ ayrıca o ay gider güncellemesinde kullanılacak realized_delta döner (signed)
+def next_pgl(prev_pgl: float, rng: np.random.Generator):
+    step = random_pgl_step(rng)
     sign = -1.0 if rng.random() < 0.5 else 1.0
     signed_delta = float(sign * step)
 
-    new_infl = float(prev_infl + signed_delta)
-    new_infl = float(np.clip(new_infl, CFG["INFL_FLOOR"], CFG["INFL_CAP"]))
+    new_pgl = float(prev_pgl + signed_delta)
+    new_pgl = float(np.clip(new_pgl, CFG["PGL_FLOOR"], CFG["PGL_CAP"]))
 
-    # band sınırına çarptıysa, giderleri güncellemede de "gerçekleşen" delta’yı kullanmak daha doğru
-    realized_delta = float(new_infl - prev_infl)
-    return new_infl, realized_delta
+    realized_delta = float(new_pgl - prev_pgl)
+    return new_pgl, realized_delta
 
 def bank_count_for_month(month: int) -> int:
     if month < 4:
@@ -211,11 +210,6 @@ def buy_cost_rate(asset_key: str) -> float:
     spr = float(CFG["SPREAD"].get(asset_key, 0.0))
     return fee + spr / 2.0
 
-def sell_cost_rate(asset_key: str) -> float:
-    fee = float(CFG["TX_FEE"])
-    spr = float(CFG["SPREAD"].get(asset_key, 0.0))
-    return fee + spr / 2.0
-
 def dd_total(p: dict) -> float:
     return float(sum(p.get("dd_accounts", {}).values()))
 
@@ -283,8 +277,8 @@ if "players" not in st.session_state:
     st.session_state.players = {}
 if "theft_popup" not in st.session_state:
     st.session_state.theft_popup = None
-if "infl_popup" not in st.session_state:
-    st.session_state.infl_popup = None
+if "pgl_popup" not in st.session_state:
+    st.session_state.pgl_popup = None
 if "bank_state" not in st.session_state:
     st.session_state.bank_state = {}
 
@@ -295,9 +289,9 @@ def get_player(name: str) -> dict:
             theft_rng.choice(np.arange(1, CFG["MONTHS"] + 1), size=3, replace=False).tolist()
         )
 
-        # ✅ Başlangıç enflasyonu: %1–%5 random
-        infl0 = float(np.random.default_rng((hash(name) % 10000) + st.session_state.seed + 777).uniform(
-            CFG["INFL_FLOOR"], CFG["INFL_CAP"]
+        # ✅ Başlangıç PGL (fiyatlar genel düzeyi oranı): %1–%5 random
+        pgl0 = float(np.random.default_rng((hash(name) % 10000) + st.session_state.seed + 777).uniform(
+            CFG["PGL_FLOOR"], CFG["PGL_CAP"]
         ))
 
         st.session_state.players[name] = {
@@ -315,7 +309,7 @@ def get_player(name: str) -> dict:
 
             "income_fixed": float(DEFAULT_MONTHLY_INCOME),
             "fixed_current": float(START_FIXED_COST),
-            "infl_current": float(infl0),
+            "pgl_current": float(pgl0),
 
             "last_dd_bank": None,
             "last_td_bank": None,
@@ -338,7 +332,7 @@ with st.sidebar:
     st.header("ℹ️ Kısa Kural Özeti")
     st.write(
         "- Gelir **sabit**.\n"
-        "- Enflasyon **%1–%5** bandında.\n"
+        "- Fiyatlar genel düzeyi oranı **%1–%5** bandında.\n"
         "- Her ay **%1–%5** aralığında bir adım seçilir ve +/− uygulanır.\n"
         "- Sabit gider: **geçen ay × (1 ± adım)** (0 altına düşmez).\n"
         "- Ay 4+ bankalar açılır: mevduat, kredi.\n"
@@ -429,57 +423,49 @@ def render_theft_modal():
             st.session_state.theft_popup = None
             st.rerun()
 
-def render_infl_modal():
-    pop = st.session_state.get("infl_popup")
+def render_pgl_modal():
+    pop = st.session_state.get("pgl_popup")
     if not pop:
         return
 
     player = str(pop.get("player", ""))
     from_month = int(pop.get("from_month", 0))
     to_month = int(pop.get("to_month", 0))
-    infl_prev = float(pop.get("infl_prev", 0.0))
-    infl_new = float(pop.get("infl_new", 0.0))
+    pgl_prev = float(pop.get("pgl_prev", 0.0))
+    pgl_new = float(pop.get("pgl_new", 0.0))
     step_used = float(pop.get("step_used", 0.0))  # realized delta (signed)
     fixed_prev = float(pop.get("fixed_prev", 0.0))
     fixed_new = float(pop.get("fixed_new", 0.0))
 
     if step_used > 0:
         msg = "Bu ay **artış adımı (+)** uygulandı → bir sonraki ay sabit giderler **arttı**."
+        arrow = "⬆️"
     elif step_used < 0:
         msg = "Bu ay **azalış adımı (−)** uygulandı → bir sonraki ay sabit giderler **azaldı**."
+        arrow = "⬇️"
     else:
-        msg = "Enflasyon band sınırına çarptığı için bu ay adım **0** olarak gerçekleşti."
+        msg = "Band sınırına çarptığı için bu ay adım **0** olarak gerçekleşti."
+        arrow = "➡️"
+
+    step_text = f"{arrow} {fmt_pct(abs(step_used))}"
 
     if hasattr(st, "dialog"):
-@st.dialog("📌 Fiyatlar Genel Düzeyi Güncellendi")
+        @st.dialog("📌 Fiyatlar Genel Düzeyi Güncellendi")
         def _dlg():
             st.markdown(
                 f"""
                 **Oyuncu:** {player}  
                 **Geçiş:** Ay {from_month} → Ay {to_month}
 
-                arrow = "⬆️" if step_used > 0 else ("⬇️" if step_used < 0 else "➡️")
-step_text = f"{arrow} {fmt_pct(abs(step_used))}"
-
-st.markdown(
-    f"""
-    **Oyuncu:** {player}  
-    **Geçiş:** Ay {from_month} → Ay {to_month}
-
-    **Fiyatlar Genel Düzeyi:** {fmt_pct(infl_prev)} → **{fmt_pct(infl_new)}**  
-    **Bu Ay Değişim:** **{step_text}**  
-    **Sabit Gider:** {fmt_tl(fixed_prev)} → **{fmt_tl(fixed_new)}**
-
-    {msg}
-    """
-)
+                **Fiyatlar Genel Düzeyi:** {fmt_pct(pgl_prev)} → **{fmt_pct(pgl_new)}**  
+                **Bu Ay Değişim:** **{step_text}**  
                 **Sabit Gider:** {fmt_tl(fixed_prev)} → **{fmt_tl(fixed_new)}**
 
                 {msg}
                 """
             )
-            if st.button("Kapat ✖", use_container_width=True, key=f"close_infl_{player}_{to_month}"):
-                st.session_state.infl_popup = None
+            if st.button("Kapat ✖", use_container_width=True, key=f"close_pgl_{player}_{to_month}"):
+                st.session_state.pgl_popup = None
                 st.rerun()
         _dlg()
     else:
@@ -488,10 +474,10 @@ st.markdown(
             f"""
             <div class="ovl">
               <div class="card" style="border:4px solid #0b4aa2;background:#f3f8ff;">
-                <div class="titleBlue">📌 Enflasyon Güncellendi</div>
+                <div class="titleBlue">📌 Fiyatlar Genel Düzeyi Güncellendi</div>
                 <div><b>Oyuncu:</b> {player} &nbsp; | &nbsp; <b>Geçiş:</b> Ay {from_month} → Ay {to_month}</div>
-                <div style="margin-top:10px;"><b>Enflasyon:</b> {fmt_pct(infl_prev)} → <b>{fmt_pct(infl_new)}</b></div>
-                <div><b>Uygulanan Adım (±):</b> <b>{fmt_pct(step_used)}</b></div>
+                <div style="margin-top:10px;"><b>Fiyatlar Genel Düzeyi:</b> {fmt_pct(pgl_prev)} → <b>{fmt_pct(pgl_new)}</b></div>
+                <div><b>Bu Ay Değişim:</b> <b>{step_text}</b></div>
                 <div><b>Sabit Gider:</b> {fmt_tl(fixed_prev)} → <b>{fmt_tl(fixed_new)}</b></div>
                 <div style="margin-top:10px;">{msg}</div>
               </div>
@@ -499,8 +485,8 @@ st.markdown(
             """,
             unsafe_allow_html=True
         )
-        if st.button("Kapat ✖", use_container_width=True, key=f"close_infl_fallback_{player}_{to_month}"):
-            st.session_state.infl_popup = None
+        if st.button("Kapat ✖", use_container_width=True, key=f"close_pgl_fallback_{player}_{to_month}"):
+            st.session_state.pgl_popup = None
             st.rerun()
 
 # =========================
@@ -516,7 +502,7 @@ opened = open_assets_by_month(month)
 
 # pop-up'ları üstte render et
 render_theft_modal()
-render_infl_modal()
+render_pgl_modal()
 
 # =========================
 # OYUN BİTTİ
@@ -539,7 +525,7 @@ if p.get("finished", False):
 # AY PANELİ (ÖZET)
 # =========================
 income = float(p["income_fixed"])
-infl = float(p["infl_current"])
+pgl = float(p["pgl_current"])
 fixed_this_month = float(p["fixed_current"])
 
 st.markdown(f"### 📅 Ay {month}/{CFG['MONTHS']}  —  Aşama: **{stage_label(month)}**")
@@ -552,8 +538,7 @@ r1c.metric("Yatırım (Toplam)", fmt_tl(total_investments(p)))
 r1d.metric("Borç", fmt_tl(p["debt"]))
 
 r2a, r2b, r2c, r2d = st.columns(4)
-# infl burada artık "fiyatlar genel düzeyi oranı" gibi duruyor ama biz metni değiştiriyoruz.
-r2a.metric("Fiyatlar Genel Düzeyi (Bu Ay)", fmt_pct(infl))
+r2a.metric("Fiyatlar Genel Düzeyi (Bu Ay)", fmt_pct(pgl))
 r2b.metric("Bu Ay Sabit Gider", fmt_tl(fixed_this_month))
 r2c.metric("Gelir (Sabit)", fmt_tl(income))
 r2d.metric("Borç Mekanizması", "Açık (Banka)" if can_borrow(month) else "Kapalı (Ay1-3)")
@@ -563,7 +548,6 @@ tab_game, tab_banks, tab_log = st.tabs(["🎯 Karar Ekranı", "🏦 Bankalar & M
 # -------------------------------------------------
 # BANKALAR & MEVDUAT
 # -------------------------------------------------
-bank_map = {}
 with tab_banks:
     st.subheader("🏦 Bankalar ve Mevduat Dökümü")
 
@@ -625,7 +609,7 @@ with tab_log:
                     with col:
                         for k, v in pairs:
                             if isinstance(v, (int, float)):
-if "Fiyatlar" in str(k) or "FaizOranı" in str(k):
+                                if "Fiyatlar" in str(k) or "FaizOranı" in str(k):
                                     st.markdown(f"**{k}:** {fmt_pct(float(v))}")
                                 else:
                                     st.markdown(f"**{k}:** {fmt_tl(float(v))}")
@@ -642,7 +626,6 @@ with tab_game:
     st.subheader("🎯 Bu Ay Kararları")
 
     fee = float(CFG["TX_FEE"])
-    pen = float(CFG["EARLY_BREAK_PENALTY"])
 
     # 1) BÜTÇE
     available_without_borrow = float(p["holdings"]["cash"]) + income
@@ -701,7 +684,6 @@ with tab_game:
         rng = rng_for_player(name, month)
 
         theft_loss = 0.0
-        bank_loss = 0.0
         td_interest = 0.0
         tx_fee_total = 0.0
         spread_cost_total = 0.0
@@ -800,7 +782,7 @@ with tab_game:
                 "player": str(name),
             }
 
-        # G) BANKA OLAYI + VADELİ FAİZ
+        # G) VADELİ FAİZ
         if month >= 4 and bank_map_local:
             for bank, bal in list(p["td_accounts"].items()):
                 if float(bal) > 0 and bank in bank_map_local:
@@ -848,7 +830,7 @@ with tab_game:
         p["log"].append({
             "Ay": month,
             "Aşama": stage_label(month),
-"FiyatlarGenelDuzeyi": float(infl),
+            "FiyatlarGenelDuzeyi": float(pgl),
             "Gelir(TL)": float(income),
             "SabitGider(TL)": float(fixed_this_month),
             "EkHarcama(TL)": float(extra),
@@ -858,35 +840,33 @@ with tab_game:
             "VadeliBozmaCezası(TL)": float(early_break_penalty_total),
             "VadeliFaizGeliri(TL)": float(td_interest),
             "NakitHırsızlıkKayıp(TL)": float(theft_loss),
-            "BankaKayıp(TL)": float(bank_loss),
             "DönemSonuNakit(TL)": float(end_cash),
             "DönemSonuYatırım(TL)": float(end_inv),
             "DönemSonuBorç(TL)": float(end_debt),
             "ToplamServet(TL)": float(end_total),
         })
 
-        # K) ✅ ENFLASYON GÜNCELLE + SABİT GİDERİ (geçen ay * (1 ± adım))
+        # K) ✅ PGL GÜNCELLE + SABİT GİDERİ (geçen ay * (1 ± adım))
         if month < CFG["MONTHS"]:
             next_rng = rng_for_player(name, month + 1)
 
-            infl_prev = float(p["infl_current"])
+            pgl_prev = float(p["pgl_current"])
             fixed_prev = float(p["fixed_current"])
 
-            infl_next, realized_delta = next_inflation(infl_prev, next_rng)
+            pgl_next, realized_delta = next_pgl(pgl_prev, next_rng)
 
-            # ✅ gider güncellemesi: geçen ayın sabit gideri * (1 + realized_delta)
             fixed_next = float(fixed_prev * (1.0 + realized_delta))
-            fixed_next = float(max(0.0, fixed_next))  # 0 altına düşmesin
+            fixed_next = float(max(0.0, fixed_next))
 
-            p["infl_current"] = float(infl_next)
+            p["pgl_current"] = float(pgl_next)
             p["fixed_current"] = float(fixed_next)
 
-            st.session_state.infl_popup = {
+            st.session_state.pgl_popup = {
                 "player": str(name),
                 "from_month": int(month),
                 "to_month": int(month + 1),
-                "infl_prev": float(infl_prev),
-                "infl_new": float(infl_next),
+                "pgl_prev": float(pgl_prev),
+                "pgl_new": float(pgl_next),
                 "step_used": float(realized_delta),
                 "fixed_prev": float(fixed_prev),
                 "fixed_new": float(fixed_next),
