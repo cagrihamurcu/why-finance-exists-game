@@ -1,5 +1,4 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import numpy as np
 import pandas as pd
 
@@ -239,7 +238,7 @@ if "seed" not in st.session_state:
     st.session_state.seed = 20260209
 if "players" not in st.session_state:
     st.session_state.players = {}
-# ✅ artık banner değil popup state
+# ✅ Popup state
 if "theft_popup" not in st.session_state:
     st.session_state.theft_popup = None
 
@@ -277,112 +276,36 @@ def get_player(name: str) -> dict:
     return st.session_state.players[name]
 
 # =========================
-# UI - BAŞLIK + RESET
+# UI - BAŞLIK
 # =========================
 st.title("🎮 1. Hafta Oyunu: Neden Finansal Piyasalar ve Kurumlarla İlgileniyoruz?")
 
 # =========================
-# ✅ HIRSIZLIK POP-UP (MODAL)
+# ✅ HIRSIZLIK POP-UP (Streamlit Dialog)
 # =========================
-# theft_popup: {"loss":..., "remain":..., "month":..., "player":...}
-if st.session_state.get("theft_popup"):
+# Not: Dialog'un çalışması için Streamlit sürümünüzün st.dialog desteklemesi gerekir.
+if st.session_state.get("theft_popup") is not None:
     pop = st.session_state.theft_popup
     loss = float(pop.get("loss", 0.0))
     remain = float(pop.get("remain", 0.0))
     m = int(pop.get("month", 0))
     player = str(pop.get("player", ""))
 
-    modal_id = f"theftModal_{st.session_state.get('seed',0)}_{np.random.randint(1_000_000)}"
-    btn_id = f"theftBtn_{np.random.randint(1_000_000)}"
+    @st.dialog("🚨 NAKİT HIRSIZLIĞI! 🚨")
+    def theft_dialog():
+        st.error(f"**Oyuncu:** {player} | **Ay:** {m}")
+        st.write(f"**Kayıp:** {fmt_tl(loss)}")
+        st.write(f"**Kalan Nakit:** {fmt_tl(remain)}")
+        st.info("Bu risk yalnızca **nakitte** geçerlidir. Bankadaki mevduat genelde daha korumalıdır.")
+        if st.button("✅ Tamam", key=f"theft_ok_{player}_{m}"):
+            st.session_state.theft_popup = None
+            st.rerun()
 
-    components.html(
-        f"""
-        <div id="{modal_id}" style="
-            position:fixed; z-index:999999;
-            left:0; top:0; width:100%; height:100%;
-            background: rgba(0,0,0,0.55);
-            display:flex; align-items:center; justify-content:center;
-            padding: 20px;
-        ">
-          <div style="
-              width: min(720px, 95vw);
-              background: #ffffff;
-              border-radius: 18px;
-              box-shadow: 0 18px 60px rgba(0,0,0,0.35);
-              border: 5px solid #b30000;
-              overflow:hidden;
-              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
-          ">
-            <div style="
-                background:#ff1a1a; color:white;
-                padding: 18px 20px;
-                font-size: 26px;
-                font-weight: 900;
-                letter-spacing: 0.3px;
-            ">
-              🚨 NAKİT HIRSIZLIĞI! 🚨
-            </div>
+    theft_dialog()
 
-            <div style="padding: 18px 20px; font-size: 18px; line-height: 1.55; color:#111;">
-              <div style="margin-bottom:10px;">
-                <b>Oyuncu:</b> {player} &nbsp; | &nbsp; <b>Ay:</b> {m}
-              </div>
-
-              <div style="margin-bottom:6px;">
-                <b>Kayıp:</b> <span style="color:#b30000; font-weight:800;">{fmt_tl(loss)}</span>
-              </div>
-
-              <div style="margin-bottom:12px;">
-                <b>Kalan Nakit:</b> <span style="font-weight:800;">{fmt_tl(remain)}</span>
-              </div>
-
-              <div style="
-                  background:#fff3f3; border:1px solid #ffd0d0;
-                  padding: 12px 12px; border-radius: 12px;
-                  font-size: 14px; color:#4a0000;
-              ">
-                Bu risk yalnızca <b>nakitte</b> geçerlidir.
-                Bankadaki mevduat bu riske karşı daha korumalıdır.
-              </div>
-
-              <div style="display:flex; justify-content:flex-end; margin-top:16px;">
-                <button id="{btn_id}" style="
-                    background:#b30000; color:white;
-                    border:none; border-radius:12px;
-                    padding: 10px 16px;
-                    font-size: 16px; font-weight: 800;
-                    cursor:pointer;
-                ">
-                  Tamam
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <script>
-          (function() {{
-            var modal = document.getElementById("{modal_id}");
-            var btn = document.getElementById("{btn_id}");
-            function closeModal() {{
-              if(modal) modal.style.display = "none";
-            }}
-            if(btn) btn.addEventListener("click", closeModal);
-            // arka plana tıklayınca kapansın:
-            if(modal) {{
-              modal.addEventListener("click", function(e) {{
-                if(e.target === modal) closeModal();
-              }});
-            }}
-          }})();
-        </script>
-        """,
-        height=0,
-    )
-
-    # ✅ tek sefer göster
-    st.session_state.theft_popup = None
-
+# =========================
+# RESET
+# =========================
 c1, c2 = st.columns([1, 4])
 with c1:
     if st.button("🧹 Oyunu Sıfırla"):
@@ -893,7 +816,7 @@ if st.button(btn_label):
         theft_loss = float(p["holdings"]["cash"]) * sev
         p["holdings"]["cash"] -= theft_loss
 
-        # ✅ POPUP tetikle
+        # ✅ Popup tetikle (bir sonraki rerun'da dialog açılır)
         st.session_state.theft_popup = {
             "loss": float(theft_loss),
             "remain": float(p["holdings"]["cash"]),
