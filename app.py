@@ -387,9 +387,7 @@ with st.sidebar:
         "- **Gelir**, 2. aydan itibaren vergi dilimi etkisiyle her ay **%5 azalır**.\n"
         "- **FGD** her ay değişir; sabit gider ve ek harcama bir sonraki ay etkilenir.\n"
         "- **4. aydan itibaren** bankalar devreye girer.\n"
-        "- ✅ **Banka batışı**, sadece **mevduatınız olan** bankada olur ve her oyuncu için **en az 2 kez** gösterilir.\n"
-        "- Batışta: mevduatın yalnızca **güvence oranı** kadar kısmı korunur; kalan kısım **batar**."
-    )
+           )
     st.divider()
     if st.button("🧹 Oyunu Sıfırla"):
         st.session_state.clear()
