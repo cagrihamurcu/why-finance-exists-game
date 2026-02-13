@@ -14,12 +14,14 @@ START_EXTRA_COST = 5000  # Ek harcama sabit başlar (oyuncu giremez/değiştirem
 # ✅ Vergi dilimi etkisi: 2. aydan itibaren gelir her ay %5 azalır
 TAX_DROP_RATE = 0.05  # %5
 
+
 def income_for_month(base_income: float, month: int) -> float:
     """Ay 1: base, Ay2: base*0.95, Ay3: base*0.95^2 ..."""
     month = int(month)
     if month <= 1:
         return float(base_income)
     return float(base_income * ((1.0 - TAX_DROP_RATE) ** (month - 1)))
+
 
 # =========================
 # OYUN PARAMETRELERİ
@@ -41,7 +43,11 @@ CFG = {
     "CASH_THEFT_SEV_MIN": 0.10,
     "CASH_THEFT_SEV_MAX": 0.35,
 
+    # Banka olayı (mevcut küçük olay)
     "BANK_INCIDENT_PROB": 0.02,
+
+    # ✅ Banka BATIŞI (tüm mevduatlar etkilenir)
+    "BANKRUPTCY_PROB": 0.01,   # ay-banka bazında batış olasılığı
 
     # Banka faiz/güvence
     "TD_RATE_MIN": 0.0070,
@@ -194,15 +200,43 @@ def banks_for_month(month: int):
         out.append({"Bank": name, **bmap_this[name]})
     return out
 
+# ✅ Banka batışlarını (GLOBAL) ay bazında üret
+def bankrupt_banks_for_month(month: int):
+    """
+    Ay içindeki batık bankalar (GLOBAL): aynı ayda tüm oyuncular için aynı bankalar batar.
+    """
+    month = int(month)
+    if month < 4:
+        return set()
+
+    if month in st.session_state.bankruptcy_state:
+        return {b for b, is_bad in st.session_state.bankruptcy_state[month].items() if is_bad}
+
+    r = rng_for_global(month + 12345)
+    b_list = banks_for_month(month)
+    bnames = [b["Bank"] for b in b_list]
+
+    state = {}
+    for b in bnames:
+        state[b] = bool(r.random() < float(CFG["BANKRUPTCY_PROB"]))
+
+    st.session_state.bankruptcy_state[month] = state
+    return {b for b, is_bad in state.items() if is_bad}
+
 def banks_df(month: int) -> pd.DataFrame:
     b = banks_for_month(month)
     if not b:
         return pd.DataFrame()
     df = pd.DataFrame(b)
+
+    bad = bankrupt_banks_for_month(month)
+    df["Durum"] = df["Bank"].apply(lambda x: "BATIK" if x in bad else "Aktif")
+
     df["Vadeli Faiz (Aylık)"] = df["TD_Rate"].map(lambda x: f"{x*100:.2f}%")
     df["Güvence Oranı"] = df["Guarantee"].map(lambda x: f"{x*100:.0f}%")
     df["Kredi Faizi (Aylık)"] = df["Loan_Rate"].map(lambda x: f"{x*100:.2f}%")
-    return df.sort_values("TD_Rate", ascending=False)[["Bank", "Vadeli Faiz (Aylık)", "Güvence Oranı", "Kredi Faizi (Aylık)"]]
+
+    return df.sort_values("TD_Rate", ascending=False)[["Bank", "Durum", "Vadeli Faiz (Aylık)", "Güvence Oranı", "Kredi Faizi (Aylık)"]]
 
 def buy_cost_rate(asset_key: str) -> float:
     fee = float(CFG["TX_FEE"])
@@ -274,8 +308,12 @@ if "pgl_popup" not in st.session_state:
     st.session_state.pgl_popup = None
 if "loan_popup" not in st.session_state:
     st.session_state.loan_popup = None
+if "bankruptcy_popup" not in st.session_state:
+    st.session_state.bankruptcy_popup = None
 if "bank_state" not in st.session_state:
     st.session_state.bank_state = {}
+if "bankruptcy_state" not in st.session_state:
+    st.session_state.bankruptcy_state = {}
 
 def get_player(name: str) -> dict:
     if name not in st.session_state.players:
@@ -323,7 +361,8 @@ with st.sidebar:
         "- **Gelir**, 2. aydan itibaren vergi dilimi etkisiyle her ay **%5 azalır**.\n"
         "- **Fiyatlar Genel Düzeyi** her ay bir **değişim** (artış/azalış) gösterir.\n"
         "- **Sabit giderler** ve **ek harcama**, bu değişime göre **bir sonraki ay** artar ya da azalır.\n"
-        "- **4. aydan itibaren** finansal kurumlar devreye girer."
+        "- **4. aydan itibaren** finansal kurumlar devreye girer.\n"
+        "- ✅ **Banka batışı** olursa: mevduatın yalnızca **güvence oranı** kadar kısmı korunur."
     )
     st.divider()
     if st.button("🧹 Oyunu Sıfırla"):
@@ -533,6 +572,72 @@ def render_loan_modal():
             st.session_state.loan_popup = None
             st.rerun()
 
+def render_bankruptcy_modal():
+    pop = st.session_state.get("bankruptcy_popup")
+    if not pop:
+        return
+
+    player = str(pop.get("player", ""))
+    m = int(pop.get("month", 0))
+    bank = str(pop.get("bank", ""))
+    guar = float(pop.get("guarantee", 0.0))
+
+    dd_before = float(pop.get("dd_before", 0.0))
+    td_before = float(pop.get("td_before", 0.0))
+    total_before = dd_before + td_before
+
+    loss = float(pop.get("loss", 0.0))
+    remain = float(pop.get("remain", 0.0))
+
+    msg = f"Bu bankada yalnızca **%{guar*100:.0f}** oranı korunur. Kalan kısım **batar**."
+
+    if hasattr(st, "dialog"):
+        @st.dialog("🏦💥 BANKA BATIŞI!")
+        def _dlg():
+            st.markdown(
+                f"""
+                **Oyuncu:** {player}  
+                **Ay:** {m}  
+                **Banka:** **{bank}**
+
+                **Güvence Oranı:** **%{guar*100:.0f}**  
+                **Batış Öncesi Toplam Mevduat:** **{fmt_tl(total_before)}**  
+                - Vadesiz: {fmt_tl(dd_before)}  
+                - Vadeli: {fmt_tl(td_before)}  
+
+                **Kayıp (Güvence Dışı):** :red[**{fmt_tl(loss)}**]  
+                **Kalan (Güvenceli):** **{fmt_tl(remain)}**
+
+                {msg}
+                """
+            )
+            if st.button("Kapat ✖", use_container_width=True, key=f"close_bankruptcy_{player}_{m}_{bank}"):
+                st.session_state.bankruptcy_popup = None
+                st.rerun()
+        _dlg()
+    else:
+        _overlay_style()
+        st.markdown(
+            f"""
+            <div class="ovl">
+              <div class="card" style="border:4px solid #7a1fa2;background:#fbf5ff;">
+                <div class="titleBlue">🏦💥 BANKA BATIŞI!</div>
+                <div><b>Oyuncu:</b> {player} &nbsp; | &nbsp; <b>Ay:</b> {m}</div>
+                <div><b>Banka:</b> <b>{bank}</b></div>
+                <div style="margin-top:10px;"><b>Güvence Oranı:</b> <b>%{guar*100:.0f}</b></div>
+                <div><b>Batış Öncesi Toplam:</b> <b>{fmt_tl(total_before)}</b> (DD {fmt_tl(dd_before)} + TD {fmt_tl(td_before)})</div>
+                <div style="margin-top:10px;"><b>Kayıp (Güvence Dışı):</b> <span style="color:#b30000;font-weight:900;">{fmt_tl(loss)}</span></div>
+                <div><b>Kalan (Güvenceli):</b> <b>{fmt_tl(remain)}</b></div>
+                <div style="margin-top:10px;">{msg}</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+        if st.button("Kapat ✖", use_container_width=True, key=f"close_bankruptcy_fallback_{player}_{m}_{bank}"):
+            st.session_state.bankruptcy_popup = None
+            st.rerun()
+
 # =========================
 # OYUNCU ADI
 # =========================
@@ -551,6 +656,7 @@ income = income_for_month(float(p["income_base"]), month)
 render_theft_modal()
 render_pgl_modal()
 render_loan_modal()
+render_bankruptcy_modal()
 
 # =========================
 # OYUN BİTTİ
@@ -613,6 +719,7 @@ with tab_banks:
     else:
         b_list = banks_for_month(month)
         bank_map = {b["Bank"]: b for b in b_list}
+
         st.dataframe(banks_df(month), use_container_width=True, hide_index=True, height=280)
 
         banks_names = list(bank_map.keys())
@@ -734,7 +841,7 @@ with tab_game:
     st.info(f"Satış/bozma ile tahmini net nakit girişi: **{fmt_tl(projected_sell_cash_in)}**")
     st.divider()
 
-    # 1) BÜTÇE (✅ gelir de yazıyor)
+    # 1) BÜTÇE
     st.markdown("#### 1) Bütçe (Bu Ay)")
 
     st.write(f"Gelir (bu ay): **{fmt_tl(income)}**")
@@ -862,6 +969,7 @@ with tab_game:
 
         theft_loss = 0.0
         bank_loss = 0.0
+        bankruptcy_loss = 0.0
         td_interest = 0.0
         tx_fee_total = 0.0
         spread_cost_total = 0.0
@@ -1000,24 +1108,74 @@ with tab_game:
                 "player": str(name),
             }
 
-        # G) banka olayı + vadeli faiz
+        # G) banka batışı + banka olayı + vadeli faiz
         if month >= 4 and bank_map_local:
+            bad_banks = bankrupt_banks_for_month(month)
+
+            # 1) BANKA BATIŞI: o bankadaki DD+TD sadece güvence oranı kadar kalır
+            for bank in set(list(p["dd_accounts"].keys()) + list(p["td_accounts"].keys())):
+                if bank not in bank_map_local:
+                    continue
+                if bank not in bad_banks:
+                    continue
+
+                guar = float(bank_map_local[bank]["Guarantee"])
+
+                dd_before = float(p["dd_accounts"].get(bank, 0.0))
+                td_before = float(p["td_accounts"].get(bank, 0.0))
+                total_before = dd_before + td_before
+                if total_before <= 0:
+                    continue
+
+                dd_after = dd_before * guar
+                td_after = td_before * guar
+
+                loss_here = (dd_before - dd_after) + (td_before - td_after)
+
+                p["dd_accounts"][bank] = float(dd_after)
+                p["td_accounts"][bank] = float(td_after)
+
+                bankruptcy_loss += float(loss_here)
+                bank_loss += float(loss_here)
+
+                # popup: bir ayda birden fazla banka batabilir; en azından son bankayı gösterir
+                st.session_state.bankruptcy_popup = {
+                    "player": str(name),
+                    "month": int(month),
+                    "bank": str(bank),
+                    "guarantee": float(guar),
+                    "dd_before": float(dd_before),
+                    "td_before": float(td_before),
+                    "loss": float(loss_here),
+                    "remain": float(dd_after + td_after),
+                }
+
+            # 2) Küçük banka olayı (batık olmayan bankalarda)
             for bank, bal in list(p["dd_accounts"].items()):
-                if float(bal) > 0 and bank in bank_map_local and rng.random() < float(CFG["BANK_INCIDENT_PROB"]):
+                if float(bal) <= 0 or bank not in bank_map_local:
+                    continue
+                if bank in bad_banks:
+                    continue
+                if rng.random() < float(CFG["BANK_INCIDENT_PROB"]):
                     guar = float(bank_map_local[bank]["Guarantee"])
                     loss = float(bal * (1.0 - guar))
                     p["dd_accounts"][bank] = float(max(0.0, bal - loss))
                     bank_loss += loss
 
             for bank, bal in list(p["td_accounts"].items()):
-                if float(bal) > 0 and bank in bank_map_local and rng.random() < float(CFG["BANK_INCIDENT_PROB"]):
+                if float(bal) <= 0 or bank not in bank_map_local:
+                    continue
+                if bank in bad_banks:
+                    continue
+                if rng.random() < float(CFG["BANK_INCIDENT_PROB"]):
                     guar = float(bank_map_local[bank]["Guarantee"])
                     loss = float(bal * (1.0 - guar))
                     p["td_accounts"][bank] = float(max(0.0, bal - loss))
                     bank_loss += loss
 
+            # 3) Vadeli faiz (batık olmayan bankalarda işler; batık bankada faiz yok)
             for bank, bal in list(p["td_accounts"].items()):
-                if float(bal) > 0 and bank in bank_map_local:
+                if float(bal) > 0 and bank in bank_map_local and bank not in bad_banks:
                     before = float(bal)
                     rate = float(bank_map_local[bank]["TD_Rate"])
                     after = float(before * (1.0 + rate))
@@ -1083,6 +1241,7 @@ with tab_game:
             "VadeliBozmaCezası(TL)": float(early_break_penalty_total),
             "VadeliFaizGeliri(TL)": float(td_interest),
             "BankaKayıp(TL)": float(bank_loss),
+            "BankaBatışıKayıp(TL)": float(bankruptcy_loss),
             "NakitHırsızlıkKayıp(TL)": float(theft_loss),
             "DönemSonuNakit(TL)": float(end_cash),
             "DönemSonuYatırım(TL)": float(end_inv),
