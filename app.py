@@ -43,12 +43,14 @@ CFG = {
     "CASH_THEFT_SEV_MIN": 0.10,
     "CASH_THEFT_SEV_MAX": 0.35,
 
-    # Küçük banka olayı (mevcut)
+    # Küçük banka olayı
     "BANK_INCIDENT_PROB": 0.02,
 
-    # ✅ Banka BATIŞI (global plan)
-    "BANKRUPTCY_PROB": 0.01,
-    "BANKRUPTCY_MIN_EVENTS": 2,  # ✅ KESİN: oyun süresince en az 2 batış olayı
+    # ✅ Banka BATIŞI (oyuncu bazlı, para varsa batış olur)
+    "BANKRUPTCY_EXTRA_PROB_AFTER_MIN": 0.05,  # min 2 sonrası ek batış ihtimali
+    "BANKRUPTCY_MIN_EVENTS_PER_PLAYER": 2,    # ✅ KESİN: her oyuncu için en az 2 batış
+    "BANKRUPTCY_FORCE_START_MONTH": 5,        # 4. ayda mevduat yeni oluşuyor; 5'ten itibaren zorlamayı başlatmak daha mantıklı
+    "BANKRUPTCY_FORCE_END_MONTH": 11,         # 12'de kapatma yerine önceki aylarda tamamla
 
     # Banka faiz/güvence
     "TD_RATE_MIN": 0.0070,
@@ -66,7 +68,7 @@ CFG = {
     "EARLY_BREAK_PENALTY": 0.01,
     "TX_FEE": 0.005,
 
-    # Spread (bunlar maliyet unsuru ama arayüzde "Komisyon" diye göstereceğiz)
+    # Spread (arayüzde "Komisyon" diye göstereceğiz)
     "SPREAD": {"fx": 0.010, "pm": 0.012, "eq": 0.020, "cr": 0.050},
 
     # Riskli varlık getirileri
@@ -201,55 +203,15 @@ def banks_for_month(month: int):
         out.append({"Bank": name, **bmap_this[name]})
     return out
 
-# ✅ GLOBAL batış planı (oyun süresince EN AZ 2 olay garanti)
-def bankrupt_banks_for_month(month: int):
-    month = int(month)
-    if month < 4:
-        return set()
-
-    if st.session_state.bankruptcy_plan is None:
-        r = rng_for_global(99991)
-        months = list(range(4, int(CFG["MONTHS"]) + 1))
-
-        candidates = []
-        for m in months:
-            b_list = banks_for_month(m)
-            for b in b_list:
-                candidates.append((m, b["Bank"]))
-
-        if not candidates:
-            st.session_state.bankruptcy_plan = {}
-        else:
-            prob = float(CFG["BANKRUPTCY_PROB"])
-            expected = prob * len(candidates)
-
-            n_events = int(r.poisson(expected))
-            n_events = max(int(CFG.get("BANKRUPTCY_MIN_EVENTS", 2)), n_events)
-            n_events = min(n_events, len(candidates))
-
-            chosen_idx = r.choice(np.arange(len(candidates)), size=n_events, replace=False)
-
-            plan = {m: set() for m in months}
-            for idx in chosen_idx:
-                m, bank = candidates[int(idx)]
-                plan[m].add(bank)
-
-            st.session_state.bankruptcy_plan = plan
-
-    plan = st.session_state.bankruptcy_plan or {}
-    return set(plan.get(month, set()))
-
 def banks_df(month: int) -> pd.DataFrame:
     b = banks_for_month(month)
     if not b:
         return pd.DataFrame()
     df = pd.DataFrame(b)
-    bad = bankrupt_banks_for_month(month)
-    df["Durum"] = df["Bank"].apply(lambda x: "BATIK" if x in bad else "Aktif")
     df["Vadeli Faiz (Aylık)"] = df["TD_Rate"].map(lambda x: f"{x*100:.2f}%")
     df["Güvence Oranı"] = df["Guarantee"].map(lambda x: f"{x*100:.0f}%")
     df["Kredi Faizi (Aylık)"] = df["Loan_Rate"].map(lambda x: f"{x*100:.2f}%")
-    return df.sort_values("TD_Rate", ascending=False)[["Bank", "Durum", "Vadeli Faiz (Aylık)", "Güvence Oranı", "Kredi Faizi (Aylık)"]]
+    return df.sort_values("TD_Rate", ascending=False)[["Bank", "Vadeli Faiz (Aylık)", "Güvence Oranı", "Kredi Faizi (Aylık)"]]
 
 def buy_cost_rate(asset_key: str) -> float:
     fee = float(CFG["TX_FEE"])
@@ -283,6 +245,55 @@ def safe_number_input(label: str, key: str, maxv: float, step: float = 1000.0) -
     prev = float(st.session_state.get(key, 0.0))
     val = min(max(prev, 0.0), maxv)
     return st.number_input(label, min_value=0.0, max_value=maxv, value=val, step=step, key=key)
+
+# =========================
+# BANKA BATIŞI: OYUNCU BAZLI SEÇİM (PARASI OLAN BANKA)
+# =========================
+def choose_bankruptcy_for_player_month(p: dict, month: int, bank_map_local: dict, rng: np.random.Generator):
+    """
+    Her oyuncu için en az 2 batış:
+    - Batış sadece oyuncunun o ay mevduatı bulunan bankalardan seçilir (dd/td > 0).
+    - Min 2 batış tamamlanana kadar uygun aylarda zorlanır.
+    - Min 2 sonrası küçük bir olasılıkla ek batış olabilir.
+    """
+    month = int(month)
+    if month < 4 or not bank_map_local:
+        return set()
+
+    # aday bankalar: oyuncunun mevduatı olan bankalar
+    candidates = []
+    for bank in bank_map_local.keys():
+        dd = float(p.get("dd_accounts", {}).get(bank, 0.0))
+        td = float(p.get("td_accounts", {}).get(bank, 0.0))
+        tot = dd + td
+        if tot > 0:
+            candidates.append((bank, tot))
+
+    if not candidates:
+        return set()
+
+    seen = int(p.get("bankruptcies_seen", 0))
+    must = int(CFG["BANKRUPTCY_MIN_EVENTS_PER_PLAYER"])
+
+    force_window = (int(CFG["BANKRUPTCY_FORCE_START_MONTH"]) <= month <= int(CFG["BANKRUPTCY_FORCE_END_MONTH"]))
+    need_force = (seen < must) and force_window
+
+    do_extra = (seen >= must) and (rng.random() < float(CFG["BANKRUPTCY_EXTRA_PROB_AFTER_MIN"]))
+
+    if not need_force and not do_extra:
+        return set()
+
+    # aynı bankayı tekrar tekrar batırmayı engelle (eğitsel olarak daha iyi)
+    history = set(p.get("bankrupt_banks_history", []))
+    fresh = [(b, w) for (b, w) in candidates if b not in history]
+    pool = fresh if fresh else candidates  # hepsi zaten batmışsa, yine de birini seç
+
+    banks = [x[0] for x in pool]
+    weights = np.array([x[1] for x in pool], dtype=float)
+    weights = weights / max(weights.sum(), 1e-9)
+
+    chosen = str(rng.choice(banks, p=weights))
+    return {chosen}
 
 # =========================
 # 1 AYLIK BORÇ MODELİ
@@ -323,11 +334,8 @@ if "loan_popup" not in st.session_state:
     st.session_state.loan_popup = None
 if "bank_state" not in st.session_state:
     st.session_state.bank_state = {}
-if "bankruptcy_plan" not in st.session_state:
-    st.session_state.bankruptcy_plan = None
-# ✅ Bir ayda birden fazla batış olursa, pop-up kuyruğa alınsın
 if "bankruptcy_queue" not in st.session_state:
-    st.session_state.bankruptcy_queue = []  # list of dict
+    st.session_state.bankruptcy_queue = []  # list of dict pop-up queue
 
 def get_player(name: str) -> dict:
     if name not in st.session_state.players:
@@ -363,6 +371,10 @@ def get_player(name: str) -> dict:
 
             "theft_months": theft_months,
             "log": [],
+
+            # ✅ batış takibi (oyuncu bazlı)
+            "bankruptcies_seen": 0,
+            "bankrupt_banks_history": [],  # list of bank names (en az bir kez batmış)
         }
     return st.session_state.players[name]
 
@@ -375,8 +387,8 @@ with st.sidebar:
         "- **Gelir**, 2. aydan itibaren vergi dilimi etkisiyle her ay **%5 azalır**.\n"
         "- **FGD** her ay değişir; sabit gider ve ek harcama bir sonraki ay etkilenir.\n"
         "- **4. aydan itibaren** bankalar devreye girer.\n"
-        "- ✅ **Banka batışı**, oyunda **kesin** olarak en az **2 kez** gerçekleşir.\n"
-        "- Batış olduğunda: mevduatın yalnızca **güvence oranı** kadar kısmı korunur; kalan kısım **batar**."
+        "- ✅ **Banka batışı**, sadece **mevduatınız olan** bankada olur ve her oyuncu için **en az 2 kez** gösterilir.\n"
+        "- Batışta: mevduatın yalnızca **güvence oranı** kadar kısmı korunur; kalan kısım **batar**."
     )
     st.divider()
     if st.button("🧹 Oyunu Sıfırla"):
@@ -492,7 +504,7 @@ def render_pgl_modal():
     step_text = f"{arrow} {fmt_pct(abs(step_used))}"
 
     if hasattr(st, "dialog"):
-        @st.dialog("📌 Fiyatlar Genel Düzeyi Güncellendi")
+        @st.dialog("📌 FGD Güncellendi")
         def _dlg():
             st.markdown(
                 f"""
@@ -500,7 +512,7 @@ def render_pgl_modal():
                 **Geçiş:** Ay {from_month} → Ay {to_month}
 
                 **FGD:** {fmt_pct(pgl_prev)} → **{fmt_pct(pgl_new)}**  
-                **Bu Ay Değişim:** **{step_text}**  
+                **Bu Ay Değişim:** **{step_text}**
 
                 **Sabit Gider:** {fmt_tl(fixed_prev)} → **{fmt_tl(fixed_new)}**  
                 **Ek Harcama:** {fmt_tl(extra_prev)} → **{fmt_tl(extra_new)}**
@@ -586,7 +598,6 @@ def render_loan_modal():
             st.session_state.loan_popup = None
             st.rerun()
 
-# ✅ Kuyruk: her seferinde ilk batış olayı gösterilir; kapatınca sıradakine geçer
 def render_bankruptcy_modal_queue():
     if not st.session_state.bankruptcy_queue:
         return
@@ -604,11 +615,6 @@ def render_bankruptcy_modal_queue():
 
     loss = float(pop.get("loss", 0.0))
     remain = float(pop.get("remain", 0.0))
-
-    if total_before <= 0:
-        extra_note = "Bu bankada **mevduatınız yoktu**; ancak piyasa genelinde **güvence sistemi** bu şekilde çalışır."
-    else:
-        extra_note = "Bu kayıp, mevduatın **güvence dışı** kalan kısmıdır."
 
     msg = f"Bu bankada yalnızca **%{guar*100:.0f}** oranı korunur. Kalan kısım **batar**."
 
@@ -631,8 +637,6 @@ def render_bankruptcy_modal_queue():
                 **Kalan (Güvenceli):** **{fmt_tl(remain)}**
 
                 {msg}
-
-                _{extra_note}_
                 """
             )
             if st.button("Kapat ✖", use_container_width=True, key=f"close_bankruptcy_{player}_{m}_{bank}"):
@@ -653,7 +657,6 @@ def render_bankruptcy_modal_queue():
                 <div style="margin-top:10px;"><b>Kayıp (Güvence Dışı):</b> <span style="color:#b30000;font-weight:900;">{fmt_tl(loss)}</span></div>
                 <div><b>Kalan (Güvenceli):</b> <b>{fmt_tl(remain)}</b></div>
                 <div style="margin-top:10px;">{msg}</div>
-                <div style="margin-top:10px;"><i>{extra_note}</i></div>
               </div>
             </div>
             """,
@@ -673,10 +676,9 @@ if not name:
 p = get_player(name)
 month = int(p["month"])
 opened = open_assets_by_month(month)
-
 income = income_for_month(float(p["income_base"]), month)
 
-# popuplar (kuyruk en sona bırakılır; önceki popuplar temizlenince çıkar)
+# popuplar
 render_theft_modal()
 render_pgl_modal()
 render_loan_modal()
@@ -1075,7 +1077,7 @@ with tab_game:
             st.error("⛔ Bu ay açık oluştu: TEMERRÜT!")
             st.rerun()
 
-        # E) alışlar / mevduat
+        # E) işlemler / mevduat-yatırım
         for k, buy_amt in inv_inputs.items():
             buy_amt = float(buy_amt)
             if buy_amt <= 0:
@@ -1128,30 +1130,36 @@ with tab_game:
                 "player": str(name),
             }
 
-        # G) BANKA BATIŞI + küçük olay + vadeli faiz
+        # G) banka batışı (para olan bankada) + küçük olay + vadeli faiz
         if month >= 4 and bank_map_local:
-            bad_banks = bankrupt_banks_for_month(month)
+            # ✅ bu ay batacak banka(lar)ı oyuncunun mevduatı olan bankadan seç
+            bad_banks = choose_bankruptcy_for_player_month(p, month, bank_map_local, rng)
 
-            # ✅ Bu ay batık bankalar varsa, oyuncunun mevduatı olsun olmasın pop-up görsün.
-            # (Eğitsel: "mevduatın yoksa bile sistem böyle çalışır")
+            # BATIŞ uygula
             for bank in sorted(list(bad_banks)):
                 guar = float(bank_map_local[bank]["Guarantee"])
                 dd_before = float(p["dd_accounts"].get(bank, 0.0))
                 td_before = float(p["td_accounts"].get(bank, 0.0))
                 total_before = dd_before + td_before
 
+                # garanti altındaki kısım kalır
                 dd_after = dd_before * guar
                 td_after = td_before * guar
                 loss_here = (dd_before - dd_after) + (td_before - td_after)
 
-                # sadece gerçekten mevduat varsa bakiyeyi düşür
-                if total_before > 0:
-                    p["dd_accounts"][bank] = float(dd_after)
-                    p["td_accounts"][bank] = float(td_after)
-                    bankruptcy_loss += float(loss_here)
-                    bank_loss += float(loss_here)
+                # oyuncunun gerçekten parası olduğu için mutlaka etkisi var
+                p["dd_accounts"][bank] = float(dd_after)
+                p["td_accounts"][bank] = float(td_after)
 
-                # pop-up kuyruğuna ekle (mevduat 0 olsa da)
+                bankruptcy_loss += float(loss_here)
+                bank_loss += float(loss_here)
+
+                # oyuncu bazlı sayacı artır
+                p["bankruptcies_seen"] = int(p.get("bankruptcies_seen", 0)) + 1
+                if bank not in p.get("bankrupt_banks_history", []):
+                    p["bankrupt_banks_history"].append(bank)
+
+                # popup
                 st.session_state.bankruptcy_queue.append({
                     "player": str(name),
                     "month": int(month),
@@ -1261,6 +1269,7 @@ with tab_game:
             "Borç(Anapara)(TL)": float(loan_outstanding_principal(p)),
             "Borç(Görünüm)(TL)": float(end_total_debt_view),
             "ToplamServet(TL)": float(end_total),
+            "BankaBatışı_Sayı": int(p.get("bankruptcies_seen", 0)),
         })
 
         # K) PGL update
