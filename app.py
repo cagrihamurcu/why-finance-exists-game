@@ -47,7 +47,8 @@ CFG = {
     "BANK_INCIDENT_PROB": 0.02,
 
     # ✅ Banka BATIŞI (tüm mevduatlar etkilenir)
-    "BANKRUPTCY_PROB": 0.01,   # ay-banka bazında batış olasılığı
+    "BANKRUPTCY_PROB": 0.01,        # olasılık
+    "BANKRUPTCY_MIN_EVENTS": 1,     # ✅ en az 1 batış garanti (Ay4-12 arası)
 
     # Banka faiz/güvence
     "TD_RATE_MIN": 0.0070,
@@ -200,28 +201,43 @@ def banks_for_month(month: int):
         out.append({"Bank": name, **bmap_this[name]})
     return out
 
-# ✅ Banka batışlarını (GLOBAL) ay bazında üret
+# ✅ GLOBAL batış planı üretir (Ay4-12 arası en az 1 olay garanti)
 def bankrupt_banks_for_month(month: int):
-    """
-    Ay içindeki batık bankalar (GLOBAL): aynı ayda tüm oyuncular için aynı bankalar batar.
-    """
     month = int(month)
     if month < 4:
         return set()
 
-    if month in st.session_state.bankruptcy_state:
-        return {b for b, is_bad in st.session_state.bankruptcy_state[month].items() if is_bad}
+    if st.session_state.bankruptcy_plan is None:
+        r = rng_for_global(99991)
+        months = list(range(4, int(CFG["MONTHS"]) + 1))
 
-    r = rng_for_global(month + 12345)
-    b_list = banks_for_month(month)
-    bnames = [b["Bank"] for b in b_list]
+        candidates = []
+        for m in months:
+            b_list = banks_for_month(m)
+            for b in b_list:
+                candidates.append((m, b["Bank"]))
 
-    state = {}
-    for b in bnames:
-        state[b] = bool(r.random() < float(CFG["BANKRUPTCY_PROB"]))
+        if not candidates:
+            st.session_state.bankruptcy_plan = {}
+        else:
+            prob = float(CFG["BANKRUPTCY_PROB"])
+            expected = prob * len(candidates)
 
-    st.session_state.bankruptcy_state[month] = state
-    return {b for b, is_bad in state.items() if is_bad}
+            n_events = int(r.poisson(expected))
+            n_events = max(int(CFG.get("BANKRUPTCY_MIN_EVENTS", 1)), n_events)
+            n_events = min(n_events, len(candidates))
+
+            chosen_idx = r.choice(np.arange(len(candidates)), size=n_events, replace=False)
+
+            plan = {m: set() for m in months}
+            for idx in chosen_idx:
+                m, bank = candidates[int(idx)]
+                plan[m].add(bank)
+
+            st.session_state.bankruptcy_plan = plan
+
+    plan = st.session_state.bankruptcy_plan or {}
+    return set(plan.get(month, set()))
 
 def banks_df(month: int) -> pd.DataFrame:
     b = banks_for_month(month)
@@ -312,8 +328,8 @@ if "bankruptcy_popup" not in st.session_state:
     st.session_state.bankruptcy_popup = None
 if "bank_state" not in st.session_state:
     st.session_state.bank_state = {}
-if "bankruptcy_state" not in st.session_state:
-    st.session_state.bankruptcy_state = {}
+if "bankruptcy_plan" not in st.session_state:
+    st.session_state.bankruptcy_plan = None  # {month: set([...])}
 
 def get_player(name: str) -> dict:
     if name not in st.session_state.players:
@@ -905,8 +921,8 @@ with tab_game:
 
     st.divider()
 
-    # 4) ALIŞ
-    st.markdown("#### 4) Yatırım Alışı (TL)")
+    # 4) MEVDUAT / YATIRIM
+    st.markdown("#### 4) İşlemler: Mevduat / Yatırım (TL)")
     available_for_invest_preview = float(p["holdings"]["cash"]) + projected_sell_cash_in + income - total_exp + float(borrow_amt_input)
     if not can_borrow(month):
         available_for_invest_preview = max(0.0, available_for_invest_preview)
@@ -919,14 +935,14 @@ with tab_game:
     with c1:
         if "dd" in opened and month >= 4:
             inv_inputs["dd"] = safe_number_input(
-                f"Vadesiz ALIŞ (TL) | Komisyon {float(CFG['TX_FEE'])*100:.2f}%",
+                f"Vadesiz MEVDUAT (TL) | Komisyon {float(CFG['TX_FEE'])*100:.2f}%",
                 f"buy_dd_{name}_{month}",
                 max_buy,
                 1000.0,
             )
         if "td" in opened and month >= 4:
             inv_inputs["td"] = safe_number_input(
-                f"Vadeli ALIŞ (TL) | Komisyon {float(CFG['TX_FEE'])*100:.2f}%",
+                f"Vadeli MEVDUAT (TL) | Komisyon {float(CFG['TX_FEE'])*100:.2f}%",
                 f"buy_td_{name}_{month}",
                 max_buy,
                 1000.0,
@@ -1055,7 +1071,7 @@ with tab_game:
             st.error("⛔ Bu ay açık oluştu: TEMERRÜT!")
             st.rerun()
 
-        # E) alışlar
+        # E) alışlar / mevduat
         for k, buy_amt in inv_inputs.items():
             buy_amt = float(buy_amt)
             if buy_amt <= 0:
@@ -1138,7 +1154,6 @@ with tab_game:
                 bankruptcy_loss += float(loss_here)
                 bank_loss += float(loss_here)
 
-                # popup: bir ayda birden fazla banka batabilir; en azından son bankayı gösterir
                 st.session_state.bankruptcy_popup = {
                     "player": str(name),
                     "month": int(month),
@@ -1150,7 +1165,7 @@ with tab_game:
                     "remain": float(dd_after + td_after),
                 }
 
-            # 2) Küçük banka olayı (batık olmayan bankalarda)
+            # 2) küçük banka olayı (batık olmayan bankalarda)
             for bank, bal in list(p["dd_accounts"].items()):
                 if float(bal) <= 0 or bank not in bank_map_local:
                     continue
@@ -1173,7 +1188,7 @@ with tab_game:
                     p["td_accounts"][bank] = float(max(0.0, bal - loss))
                     bank_loss += loss
 
-            # 3) Vadeli faiz (batık olmayan bankalarda işler; batık bankada faiz yok)
+            # 3) vadeli faiz (batık olmayan bankalarda)
             for bank, bal in list(p["td_accounts"].items()):
                 if float(bal) > 0 and bank in bank_map_local and bank not in bad_banks:
                     before = float(bal)
@@ -1250,7 +1265,7 @@ with tab_game:
             "ToplamServet(TL)": float(end_total),
         })
 
-        # K) PGL update (sabit gider + ek harcama etkilenir)
+        # K) PGL update
         if month < CFG["MONTHS"]:
             next_rng = rng_for_player(name, month + 1)
 
