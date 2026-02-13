@@ -385,7 +385,7 @@ with st.sidebar:
     st.header("ℹ️ Oyun Bilgisi")
     st.write(
         "- **Gelir**, 2. aydan itibaren vergi dilimi etkisiyle her ay **%5 azalır**.\n"
-        "- **FGD** her ay değişir; sabit gider ve ek harcama bir sonraki ay etkilenir.\n"
+        "- **Fiyatlar Genel Düzeyi** her ay değişir; sabit gider ve ek harcama bir sonraki ay etkilenir.\n"
         "- **4. aydan itibaren** bankalar devreye girer.\n"
            )
     st.divider()
