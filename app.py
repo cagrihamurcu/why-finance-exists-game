@@ -49,7 +49,7 @@ CFG = {
     # ✅ Banka BATIŞI (oyuncu bazlı, para varsa batış olur)
     "BANKRUPTCY_EXTRA_PROB_AFTER_MIN": 0.05,  # min 2 sonrası ek batış ihtimali
     "BANKRUPTCY_MIN_EVENTS_PER_PLAYER": 2,    # ✅ KESİN: her oyuncu için en az 2 batış
-    "BANKRUPTCY_FORCE_START_MONTH": 5,        # 4. ayda mevduat yeni oluşuyor; 5'ten itibaren zorlamayı başlatmak daha mantıklı
+    "BANKRUPTCY_FORCE_START_MONTH": 5,        # 4. ayda mevduat yeni oluşuyor; 5'ten itibaren zorlamayı başlat
     "BANKRUPTCY_FORCE_END_MONTH": 11,         # 12'de kapatma yerine önceki aylarda tamamla
 
     # Banka faiz/güvence
@@ -260,7 +260,6 @@ def choose_bankruptcy_for_player_month(p: dict, month: int, bank_map_local: dict
     if month < 4 or not bank_map_local:
         return set()
 
-    # aday bankalar: oyuncunun mevduatı olan bankalar
     candidates = []
     for bank in bank_map_local.keys():
         dd = float(p.get("dd_accounts", {}).get(bank, 0.0))
@@ -283,10 +282,9 @@ def choose_bankruptcy_for_player_month(p: dict, month: int, bank_map_local: dict
     if not need_force and not do_extra:
         return set()
 
-    # aynı bankayı tekrar tekrar batırmayı engelle (eğitsel olarak daha iyi)
     history = set(p.get("bankrupt_banks_history", []))
     fresh = [(b, w) for (b, w) in candidates if b not in history]
-    pool = fresh if fresh else candidates  # hepsi zaten batmışsa, yine de birini seç
+    pool = fresh if fresh else candidates
 
     banks = [x[0] for x in pool]
     weights = np.array([x[1] for x in pool], dtype=float)
@@ -335,7 +333,11 @@ if "loan_popup" not in st.session_state:
 if "bank_state" not in st.session_state:
     st.session_state.bank_state = {}
 if "bankruptcy_queue" not in st.session_state:
-    st.session_state.bankruptcy_queue = []  # list of dict pop-up queue
+    st.session_state.bankruptcy_queue = []
+# ✅ Leaderboard
+if "leaderboard" not in st.session_state:
+    # { "OyuncuAdi": {"NetServet": x, "Defaulted": bool} }
+    st.session_state.leaderboard = {}
 
 def get_player(name: str) -> dict:
     if name not in st.session_state.players:
@@ -374,9 +376,42 @@ def get_player(name: str) -> dict:
 
             # ✅ batış takibi (oyuncu bazlı)
             "bankruptcies_seen": 0,
-            "bankrupt_banks_history": [],  # list of bank names (en az bir kez batmış)
+            "bankrupt_banks_history": [],
         }
     return st.session_state.players[name]
+
+# =========================
+# LEADERBOARD RENDER
+# =========================
+def render_leaderboard():
+    st.divider()
+    st.subheader("🏆 Sınıf Leaderboard — En Yüksek Net Servet")
+
+    lb = st.session_state.get("leaderboard", {})
+    if not lb:
+        st.info("Henüz oyun tamamlayan yok.")
+        return
+
+    rows = []
+    for player_name, data in lb.items():
+        netv = float(data.get("NetServet", 0.0))
+        defaulted = bool(data.get("Defaulted", False))
+        rows.append({
+            "Oyuncu": str(player_name),
+            "_NetServetNum": netv,
+            "Net Servet": fmt_tl(netv),
+            "Durum": "⛔ Temerrüt" if defaulted else "✅ Tamamladı",
+        })
+
+    df_lb = pd.DataFrame(rows).sort_values("_NetServetNum", ascending=False).reset_index(drop=True)
+    df_lb.insert(0, "Sıra", range(1, len(df_lb) + 1))
+    df_show = df_lb[["Sıra", "Oyuncu", "Net Servet", "Durum"]]
+
+    st.dataframe(df_show, use_container_width=True, hide_index=True)
+
+    # lider bilgisi
+    winner = df_lb.iloc[0]
+    st.success(f"🥇 Lider: {winner['Oyuncu']} — {winner['Net Servet']}")
 
 # =========================
 # SIDEBAR
@@ -689,15 +724,28 @@ render_bankruptcy_modal_queue()
 # =========================
 if p.get("finished", False):
     st.subheader("✅ Oyun Sonu")
+
+    # ✅ Leaderboard kaydı
+    final_net = float(net_wealth(p))
+    st.session_state.leaderboard[name] = {
+        "NetServet": final_net,
+        "Defaulted": bool(p.get("defaulted", False))
+    }
+
     if p.get("defaulted", False):
         st.error("⛔ Oyun bitti: Temerrüt oluştu.")
     else:
         st.success("✅ Oyun bitti: 12. ay tamamlandı.")
+
     a1, a2, a3, a4 = st.columns(4)
     a1.metric("Nakit", fmt_tl(p["holdings"]["cash"]))
     a2.metric("Yatırım (Toplam)", fmt_tl(total_investments(p)))
     a3.metric("Borç (Toplam Görünüm)", fmt_tl(total_debt_display(p, month)))
     a4.metric("Servet (Net)", fmt_tl(net_wealth(p)))
+
+    # ✅ bitiş ekranında da leaderboard görünsün
+    render_leaderboard()
+
     st.stop()
 
 # =========================
@@ -1132,7 +1180,6 @@ with tab_game:
 
         # G) banka batışı (para olan bankada) + küçük olay + vadeli faiz
         if month >= 4 and bank_map_local:
-            # ✅ bu ay batacak banka(lar)ı oyuncunun mevduatı olan bankadan seç
             bad_banks = choose_bankruptcy_for_player_month(p, month, bank_map_local, rng)
 
             # BATIŞ uygula
@@ -1142,24 +1189,20 @@ with tab_game:
                 td_before = float(p["td_accounts"].get(bank, 0.0))
                 total_before = dd_before + td_before
 
-                # garanti altındaki kısım kalır
                 dd_after = dd_before * guar
                 td_after = td_before * guar
                 loss_here = (dd_before - dd_after) + (td_before - td_after)
 
-                # oyuncunun gerçekten parası olduğu için mutlaka etkisi var
                 p["dd_accounts"][bank] = float(dd_after)
                 p["td_accounts"][bank] = float(td_after)
 
                 bankruptcy_loss += float(loss_here)
                 bank_loss += float(loss_here)
 
-                # oyuncu bazlı sayacı artır
                 p["bankruptcies_seen"] = int(p.get("bankruptcies_seen", 0)) + 1
                 if bank not in p.get("bankrupt_banks_history", []):
                     p["bankrupt_banks_history"].append(bank)
 
-                # popup
                 st.session_state.bankruptcy_queue.append({
                     "player": str(name),
                     "month": int(month),
@@ -1323,3 +1366,8 @@ if p["log"]:
     st.line_chart(df_plot.set_index("Ay")["Toplam Servet (Net) - TL"])
 else:
     st.info("Grafiğin oluşması için en az 1 ayı tamamlayın.")
+
+# =========================
+# LEADERBOARD (sayfanın en altında da görünsün)
+# =========================
+render_leaderboard()
